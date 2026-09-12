@@ -28,7 +28,7 @@ export default function App() {
     setLoading(true);
     setResult('');
     try {
-      const response = await axios.post("http://localhost:8000/api/review-resume", formData);
+      const response = await axios.post(" https://ai-resume-reviewer-e412.onrender.com", formData);
       setResult(response.data.analysis);
     } catch (error) {
       console.error(error);
