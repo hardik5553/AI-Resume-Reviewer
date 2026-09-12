@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+pdfplumber
+google-genai
+python-multipart
+pydantic
