@@ -14,9 +14,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Yahan apni API key seedha quotes mein daal dein
-import os
+# Initialize the Gemini client using environment variable
 API_KEY = os.getenv("GEMINI_API_KEY")
+client = genai.Client(api_key=API_KEY)
+
 def extract_text_from_pdf(file_path: str) -> str:
     text = ""
     with pdfplumber.open(file_path) as pdf:
