@@ -2,7 +2,7 @@ import os
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import pdfplumber
-from google import genai
+import google.generativeai as genai
 
 app = FastAPI()
 
@@ -14,9 +14,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize the Gemini client using environment variable
+# Initialize Gemini with the API key from environment variables
 API_KEY = os.getenv("GEMINI_API_KEY")
-client = genai.Client(api_key=API_KEY)
+genai.configure(api_key=API_KEY)
 
 def extract_text_from_pdf(file_path: str) -> str:
     text = ""
@@ -51,9 +51,8 @@ async def review_resume(file: UploadFile = File(...)):
     {resume_text}
     """
     
-    response = client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=prompt,
-    )
+    # Using stable gemini-1.5-flash model
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    response = model.generate_content(prompt)
     
     return {"analysis": response.text}
