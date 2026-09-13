@@ -28,10 +28,19 @@ export default function App() {
     setLoading(true);
     setResult('');
     try {
-      const response = await axios.post("https://ai-resume-reviewer-e412.onrender.com/api/review-resume", formData);
+      // Explicit headers add kiye gaye hain taaki browser CORS/Network block na kare
+      const response = await axios.post(
+        "https://ai-resume-reviewer-e412.onrender.com/api/review-resume", 
+        formData,
+        {
+          headers: {
+            "Content-Type": "multipart/form-data",
+          }
+        }
+      );
       setResult(response.data.analysis);
     } catch (error) {
-      console.error(error);
+      console.error("Complete Error Details:", error);
       alert("Failed to analyze resume. Ensure backend server is running.");
     } finally {
       setLoading(false);
@@ -51,7 +60,7 @@ export default function App() {
           </span>
         </div>
         <span className="text-xs uppercase tracking-wider bg-slate-800 border border-slate-700 px-3 py-1 rounded-full text-indigo-300">
-          Gemini 2.5 Flash Engine
+          Gemini 1.5 Flash Engine
         </span>
       </header>
 
