@@ -3,19 +3,18 @@ import traceback
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import pdfplumber
-from google import genai  # Naya official SDK
+from google import genai
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Render Environment se nayi AQ. key aayegi
 API_KEY = os.getenv("GEMINI_API_KEY")
 
 def extract_text_from_pdf(file_path: str) -> str:
@@ -54,11 +53,10 @@ def review_resume(file: UploadFile = File(...)):
         {resume_text}
         """
         
-        # Naya SDK jo AQ. keys ko natively handle karta hai
         client = genai.Client(api_key=API_KEY)
         
         response = client.models.generate_content(
-            model='gemini-1.5-flash',
+            model='gemini-1.5-pro',
             contents=prompt
         )
         
