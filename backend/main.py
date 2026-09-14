@@ -55,7 +55,7 @@ def review_resume(file: UploadFile = File(...)):
         """
         
         # Call Gemini API
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-pro')
         response = model.generate_content(prompt)
         
         return {"analysis": response.text}
