@@ -14,7 +14,10 @@ from google import genai
 # FASTAPI APP
 # ============================================================
 
-app = FastAPI(title="AI Resume Reviewer API")
+app = FastAPI(
+    title="AI Resume Reviewer API",
+    version="1.0.0"
+)
 
 
 # ============================================================
@@ -38,7 +41,25 @@ API_KEY = os.getenv("GEMINI_API_KEY")
 
 
 # ============================================================
-# HEALTH CHECK
+# GEMINI MODELS
+# ============================================================
+
+# IMPORTANT:
+# Do NOT use Gemini 1.5 or 2.5 here.
+# Your API key is reporting that those models are unavailable
+# to new users.
+
+GEMINI_MODELS = [
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+]
+
+
+# ============================================================
+# HOME / HEALTH CHECK
 # ============================================================
 
 @app.get("/")
@@ -65,120 +86,41 @@ def extract_text_from_pdf(file_path: str) -> str:
     text = ""
 
     try:
+
         with pdfplumber.open(file_path) as pdf:
 
             for page in pdf.pages:
 
-                page_text = page.extract_text()
+                extracted = page.extract_text()
 
-                if page_text:
-                    text += page_text + "\n"
+                if extracted:
+                    text += extracted + "\n"
 
     except Exception as e:
 
         raise RuntimeError(
-            f"Could not read PDF: {str(e)}"
+            f"Failed to extract text from PDF: {str(e)}"
         )
 
     return text.strip()
 
 
 # ============================================================
-# GET AVAILABLE GEMINI MODEL
+# GEMINI AI REVIEW
 # ============================================================
 
-def get_available_model(client):
-
-    """
-    Find a currently available Gemini model.
-
-    We don't blindly depend on one model name because
-    models can become unavailable, overloaded, or deprecated.
-    """
-
-    preferred_models = [
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-3.8-flash",
-        "gemini-3.7-flash",
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-3.5-flash-lite",
-    ]
-
-    try:
-
-        available_models = list(client.models.list())
-
-        available_names = []
-
-        for model in available_models:
-
-            name = getattr(model, "name", "")
-
-            if name:
-                name = name.replace("models/", "")
-                available_names.append(name)
-
-        print("\nAVAILABLE GEMINI MODELS:")
-        print(available_names)
-
-        # First try preferred models
-        for preferred in preferred_models:
-
-            if preferred in available_names:
-                print(
-                    f"\nUsing Gemini model: {preferred}"
-                )
-
-                return preferred
-
-        # Fallback:
-        # Find any model which looks like a Flash model
-        for name in available_names:
-
-            lower_name = name.lower()
-
-            if (
-                "gemini" in lower_name
-                and "flash" in lower_name
-                and "embedding" not in lower_name
-                and "tts" not in lower_name
-                and "image" not in lower_name
-            ):
-
-                print(
-                    f"\nUsing fallback Gemini model: {name}"
-                )
-
-                return name
-
-    except Exception as e:
-
-        print(
-            "\nCould not list Gemini models:"
-        )
-
-        print(str(e))
-
-    return None
-
-
-# ============================================================
-# GENERATE AI REVIEW
-# ============================================================
-
-def generate_ai_review(prompt: str):
+def generate_ai_review(prompt: str) -> str:
 
     if not API_KEY:
 
         raise HTTPException(
             status_code=500,
-            detail=(
-                "GEMINI_API_KEY is not configured "
-                "on the server."
-            )
+            detail="GEMINI_API_KEY is not configured on Render."
         )
+
+    # --------------------------------------------------------
+    # Create Gemini client
+    # --------------------------------------------------------
 
     try:
 
@@ -188,119 +130,159 @@ def generate_ai_review(prompt: str):
 
     except Exception as e:
 
+        print("GEMINI CLIENT ERROR:")
+        print(traceback.format_exc())
+
         raise HTTPException(
             status_code=500,
             detail=f"Could not initialize Gemini: {str(e)}"
         )
 
-    # --------------------------------------------------------
-    # Find available model
-    # --------------------------------------------------------
-
-    model_name = get_available_model(client)
-
-    if not model_name:
-
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "No usable Gemini model was found "
-                "for this API key."
-            )
-        )
-
-    # --------------------------------------------------------
-    # Try selected model
-    # --------------------------------------------------------
-
-    max_attempts = 3
-
     last_error = None
 
-    for attempt in range(max_attempts):
+    # --------------------------------------------------------
+    # Try models one by one
+    # --------------------------------------------------------
 
-        try:
+    for model_name in GEMINI_MODELS:
 
-            print(
-                f"\nGemini request attempt "
-                f"{attempt + 1}/{max_attempts}"
-            )
+        print("\n======================================")
+        print(f"Trying Gemini model: {model_name}")
+        print("======================================")
 
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt
-            )
+        # Try the same model up to 2 times
+        for attempt in range(2):
 
-            if response and response.text:
+            try:
 
                 print(
-                    f"\nGemini response received "
-                    f"using {model_name}"
+                    f"Attempt {attempt + 1}/2 "
+                    f"for {model_name}"
                 )
 
-                return response.text
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt
+                )
 
-            raise RuntimeError(
-                "Gemini returned an empty response."
-            )
+                # ------------------------------------------------
+                # Validate response
+                # ------------------------------------------------
 
-        except Exception as e:
-
-            last_error = e
-
-            error_text = str(e).lower()
-
-            print(
-                f"\nGemini error with {model_name}:"
-            )
-
-            print(str(e))
-
-            # ------------------------------------------------
-            # Retry temporary errors
-            # ------------------------------------------------
-
-            temporary_error = (
-                "503" in error_text
-                or "unavailable" in error_text
-                or "high demand" in error_text
-                or "429" in error_text
-                or "resource exhausted" in error_text
-                or "timeout" in error_text
-            )
-
-            if temporary_error:
-
-                if attempt < max_attempts - 1:
-
-                    wait_time = 2 ** attempt
+                if response and response.text:
 
                     print(
-                        f"Temporary Gemini error."
-                        f" Retrying in {wait_time} seconds..."
+                        f"\nSUCCESS: {model_name}"
                     )
 
-                    time.sleep(wait_time)
+                    return response.text
 
-                    continue
+                print(
+                    f"{model_name} returned empty response."
+                )
 
-            # Non-temporary error
-            break
+                last_error = Exception(
+                    "Gemini returned an empty response."
+                )
 
-    # --------------------------------------------------------
-    # All attempts failed
-    # --------------------------------------------------------
+                break
 
-    print("\nGEMINI FINAL ERROR:")
-    print(traceback.format_exc())
+            except Exception as e:
+
+                last_error = e
+
+                error_text = str(e).lower()
+
+                print(
+                    f"\nERROR from {model_name}:"
+                )
+
+                print(str(e))
+
+                # ------------------------------------------------
+                # 404 = model unavailable
+                # ------------------------------------------------
+
+                if (
+                    "404" in error_text
+                    or "not_found" in error_text
+                    or "not found" in error_text
+                    or "no longer available" in error_text
+                ):
+
+                    print(
+                        f"{model_name} is unavailable."
+                    )
+
+                    # Don't retry same unavailable model
+                    break
+
+                # ------------------------------------------------
+                # 503 / high demand
+                # ------------------------------------------------
+
+                temporary_error = (
+                    "503" in error_text
+                    or "unavailable" in error_text
+                    or "high demand" in error_text
+                    or "temporarily" in error_text
+                    or "overloaded" in error_text
+                )
+
+                # ------------------------------------------------
+                # 429 / rate limit
+                # ------------------------------------------------
+
+                rate_limit_error = (
+                    "429" in error_text
+                    or "resource exhausted" in error_text
+                    or "rate limit" in error_text
+                )
+
+                if temporary_error or rate_limit_error:
+
+                    if attempt == 0:
+
+                        print(
+                            "Temporary error."
+                        )
+
+                        print(
+                            "Waiting 2 seconds before retry..."
+                        )
+
+                        time.sleep(2)
+
+                        continue
+
+                # ------------------------------------------------
+                # Other error
+                # ------------------------------------------------
+
+                print(
+                    f"Moving to next model..."
+                )
+
+                break
+
+    # ========================================================
+    # ALL MODELS FAILED
+    # ========================================================
+
+    print("\n======================================")
+    print("ALL GEMINI MODELS FAILED")
+    print("======================================")
+
+    if last_error:
+
+        print(str(last_error))
 
     raise HTTPException(
         status_code=503,
         detail=(
             "Gemini AI service is currently unavailable. "
-            "Please try again after a short while. "
-            f"Model used: {model_name}. "
-            f"Error: {str(last_error)}"
+            "All configured Gemini models failed. "
+            "Please try again in a few moments."
         )
     )
 
@@ -315,17 +297,14 @@ def review_resume(
 ):
 
     # --------------------------------------------------------
-    # API KEY CHECK
+    # API KEY
     # --------------------------------------------------------
 
     if not API_KEY:
 
         raise HTTPException(
             status_code=500,
-            detail=(
-                "GEMINI_API_KEY is not configured "
-                "on the server."
-            )
+            detail="GEMINI_API_KEY is missing on the server."
         )
 
     # --------------------------------------------------------
@@ -350,9 +329,9 @@ def review_resume(
 
     try:
 
-        # ----------------------------------------------------
+        # ====================================================
         # SAVE PDF TEMPORARILY
-        # ----------------------------------------------------
+        # ====================================================
 
         with tempfile.NamedTemporaryFile(
             delete=False,
@@ -363,26 +342,28 @@ def review_resume(
 
             file_content = file.file.read()
 
-            if not file_content:
+            # 10 MB limit
+            if len(file_content) > 10 * 1024 * 1024:
+
+                raise HTTPException(
+                    status_code=400,
+                    detail="PDF must be smaller than 10 MB."
+                )
+
+            if len(file_content) == 0:
 
                 raise HTTPException(
                     status_code=400,
                     detail="Uploaded PDF is empty."
                 )
 
-            # 10 MB limit
-            if len(file_content) > 10 * 1024 * 1024:
-
-                raise HTTPException(
-                    status_code=400,
-                    detail="PDF size must be less than 10 MB."
-                )
-
             temp_file.write(file_content)
 
-        # ----------------------------------------------------
-        # EXTRACT TEXT
-        # ----------------------------------------------------
+        # ====================================================
+        # EXTRACT RESUME TEXT
+        # ====================================================
+
+        print("\nExtracting resume text...")
 
         resume_text = extract_text_from_pdf(
             temp_path
@@ -394,83 +375,98 @@ def review_resume(
                 status_code=400,
                 detail=(
                     "Could not extract text from this PDF. "
-                    "Please upload a text-based resume PDF."
+                    "Please upload a text-based PDF resume."
                 )
             )
 
-        # ----------------------------------------------------
-        # LIMIT TEXT SIZE
-        # ----------------------------------------------------
+        print(
+            f"Resume text extracted: "
+            f"{len(resume_text)} characters"
+        )
 
-        # Prevent unnecessarily huge prompts
+        # Avoid unnecessarily huge prompts
         resume_text = resume_text[:50000]
 
-        # ----------------------------------------------------
+        # ====================================================
         # AI PROMPT
-        # ----------------------------------------------------
+        # ====================================================
 
         prompt = f"""
-You are an expert professional resume reviewer and career advisor.
+You are an expert professional resume reviewer,
+career advisor and ATS specialist.
 
-Analyze the following resume carefully.
+Analyze the resume below carefully.
 
-Provide the review in a clean, professional and easy-to-read format.
+Give a professional, honest and constructive review.
 
-Include:
+Your response MUST contain these sections:
 
 1. OVERALL SCORE
 Give a score out of 100.
 
 2. RESUME SUMMARY
-Give a short assessment of the resume.
+Give a short overall assessment.
 
 3. KEY STRENGTHS
-Mention the strongest parts of the resume.
+List the strongest points.
 
 4. WEAKNESSES
-Identify missing, weak or unclear areas.
+List missing, weak or unclear areas.
 
 5. SKILLS ANALYSIS
-Evaluate the technical and soft skills.
+Analyze technical and soft skills.
 
 6. EXPERIENCE ANALYSIS
-Evaluate projects, internships and work experience.
+Analyze internships, jobs and practical experience.
 
-7. EDUCATION ANALYSIS
-Evaluate the education section.
+7. PROJECT ANALYSIS
+Analyze the projects mentioned in the resume.
 
-8. ATS ANALYSIS
-Check ATS friendliness, keywords, formatting and structure.
+8. EDUCATION ANALYSIS
+Review the education section.
 
-9. ACTIONABLE RECOMMENDATIONS
+9. ATS ANALYSIS
+Check:
+- ATS friendliness
+- Keywords
+- Formatting
+- Section structure
+- Readability
+
+10. ACTIONABLE RECOMMENDATIONS
 Give specific improvements the candidate should make.
 
-10. FINAL VERDICT
-Give a short final conclusion.
+11. FINAL VERDICT
+Give a short conclusion.
 
-Be honest but constructive.
+IMPORTANT:
+- Do not invent information.
+- Only use information actually present in the resume.
+- Be constructive.
+- Give practical recommendations.
+- Use simple professional language.
 
-Do not invent information that is not present in the resume.
-
-RESUME TEXT:
--------------------------
+RESUME:
+==================================================
 
 {resume_text}
 
--------------------------
+==================================================
 """
 
-        # ----------------------------------------------------
-        # GENERATE REVIEW
-        # ----------------------------------------------------
+        # ====================================================
+        # GENERATE AI REVIEW
+        # ====================================================
+
+        print("\nSending resume to Gemini...")
 
         analysis = generate_ai_review(
             prompt
         )
 
-        # ----------------------------------------------------
-        # RETURN TO FRONTEND
-        # ----------------------------------------------------
+        # ====================================================
+        # RETURN RESULT
+        # ====================================================
 
         return {
             "success": True,
@@ -482,17 +478,9 @@ RESUME TEXT:
 
     except Exception as e:
 
-        print(
-            "\n=============================="
-        )
-
-        print(
-            "RESUME REVIEW ERROR"
-        )
-
-        print(
-            "=============================="
-        )
+        print("\n======================================")
+        print("RESUME REVIEW ERROR")
+        print("======================================")
 
         print(
             traceback.format_exc()
@@ -505,20 +493,21 @@ RESUME TEXT:
 
     finally:
 
-        # ----------------------------------------------------
+        # ====================================================
         # DELETE TEMP FILE
-        # ----------------------------------------------------
+        # ====================================================
 
         if temp_path:
 
             try:
 
                 if os.path.exists(temp_path):
+
                     os.remove(temp_path)
 
-            except Exception as cleanup_error:
+            except Exception as e:
 
                 print(
-                    "Temporary file cleanup failed:",
-                    cleanup_error
+                    "Could not delete temporary file:",
+                    str(e)
                 )
