@@ -15,8 +15,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Aapki key seedha yahan hardcode kar di hai taaki Render env issues na aayein
+# Render Environment variable se API key fetch karna
 API_KEY = os.getenv("GEMINI_API_KEY")
+
 def extract_text_from_pdf(file_path: str) -> str:
     text = ""
     with pdfplumber.open(file_path) as pdf:
@@ -26,17 +27,20 @@ def extract_text_from_pdf(file_path: str) -> str:
 
 @app.post("/api/review-resume")
 def review_resume(file: UploadFile = File(...)):
+    if not API_KEY:
+        raise HTTPException(status_code=500, detail="API Key not found in Render environment")
+        
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
     
     temp_path = f"temp_{file.filename}"
     
     try:
-        # File save karna
+        # 1. File save karna
         with open(temp_path, "wb") as buffer:
             buffer.write(file.file.read())
         
-        # PDF se text nikalna
+        # 2. PDF se text extract karna
         resume_text = extract_text_from_pdf(temp_path)
         
         prompt = f"""
@@ -50,22 +54,33 @@ def review_resume(file: UploadFile = File(...)):
         {resume_text}
         """
         
-        # Direct REST API call (Buggy Python SDK bypass kar diya)
-        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
-        headers = {
-            "Content-Type": "application/json",
-            "x-goog-api-key": API_KEY 
-        }
         payload = {
             "contents": [{"parts": [{"text": prompt}]}]
         }
         
-        api_response = requests.post(url, headers=headers, json=payload)
+        # 3. BULLETPROOF AUTO-FALLBACK: Alag-alag models try karega taaki 404 error na aaye
+        models_to_try = ["gemini-1.5-flash", "gemini-pro", "gemini-1.5-flash-latest"]
+        api_response = None
         
-        if api_response.status_code != 200:
-            raise Exception(f"Gemini API Error: {api_response.text}")
+        for model_name in models_to_try:
+            # Header ki jagah URL parameter mein key bhej rahe hain (Sabse stable tareeka)
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={API_KEY}"
+            headers = {"Content-Type": "application/json"}
             
-        # Response parse karna
+            response = requests.post(url, headers=headers, json=payload)
+            
+            if response.status_code == 200:
+                api_response = response
+                break  # Jaise hi success milega, loop ruk jayega
+            else:
+                print(f"Skipping {model_name} due to error: {response.status_code}")
+                api_response = response # Aakhiri error ko save rakhega
+        
+        # Agar saare models fail ho jayein tab hi error throw karega
+        if api_response.status_code != 200:
+            raise Exception(f"Google API Error: {api_response.text}")
+            
+        # 4. JSON parse karke result nikalna
         response_data = api_response.json()
         analysis_text = response_data['candidates'][0]['content']['parts'][0]['text']
         
