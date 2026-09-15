@@ -1,4 +1,5 @@
 import os
+import json
 import tempfile
 import traceback
 
@@ -16,7 +17,7 @@ from google.genai import types
 
 app = FastAPI(
     title="AI Resume Reviewer API",
-    version="2.0.0"
+    version="3.0.0"
 )
 
 
@@ -39,7 +40,7 @@ app.add_middleware(
 
 API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Fast model
+# Current fast model
 GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 
@@ -51,7 +52,8 @@ GEMINI_MODEL = "gemini-3.5-flash-lite"
 def home():
     return {
         "status": "online",
-        "message": "AI Resume Reviewer API is running"
+        "message": "AI Resume Reviewer API is running",
+        "version": "3.0.0"
     }
 
 
@@ -96,10 +98,200 @@ def extract_text_from_pdf(file_path: str) -> str:
 
 
 # ============================================================
+# FORMAT STRUCTURED RESULT INTO TEXT
+# Keeps old frontend working
+# ============================================================
+
+def format_analysis(data: dict) -> str:
+
+    lines = []
+
+    # --------------------------------------------------------
+    # Overall Score
+    # --------------------------------------------------------
+
+    lines.append("1. OVERALL SCORE")
+    lines.append(
+        f"{data.get('overallScore', 0)}/100"
+    )
+    lines.append("")
+
+    # --------------------------------------------------------
+    # Summary
+    # --------------------------------------------------------
+
+    lines.append("2. RESUME SUMMARY")
+    lines.append(
+        data.get("summary", "")
+    )
+    lines.append("")
+
+    # --------------------------------------------------------
+    # Strengths
+    # --------------------------------------------------------
+
+    lines.append("3. KEY STRENGTHS")
+
+    for item in data.get("strengths", []):
+        lines.append(f"- {item}")
+
+    lines.append("")
+
+    # --------------------------------------------------------
+    # Weaknesses
+    # --------------------------------------------------------
+
+    lines.append("4. WEAKNESSES")
+
+    for item in data.get("weaknesses", []):
+        lines.append(f"- {item}")
+
+    lines.append("")
+
+    # --------------------------------------------------------
+    # Skills
+    # --------------------------------------------------------
+
+    skills = data.get("skills", {})
+
+    lines.append("5. SKILLS ANALYSIS")
+    lines.append(
+        f"Skills Score: {skills.get('score', 0)}/100"
+    )
+
+    technical = skills.get("technical", [])
+
+    if technical:
+        lines.append("Technical Skills:")
+        for item in technical:
+            lines.append(f"- {item}")
+
+    soft = skills.get("soft", [])
+
+    if soft:
+        lines.append("Soft Skills:")
+        for item in soft:
+            lines.append(f"- {item}")
+
+    missing = skills.get("missing", [])
+
+    if missing:
+        lines.append("Missing / Recommended Skills:")
+        for item in missing:
+            lines.append(f"- {item}")
+
+    lines.append("")
+
+    # --------------------------------------------------------
+    # Experience
+    # --------------------------------------------------------
+
+    experience = data.get("experience", {})
+
+    lines.append("6. EXPERIENCE ANALYSIS")
+    lines.append(
+        f"Experience Score: {experience.get('score', 0)}/100"
+    )
+
+    for item in experience.get("points", []):
+        lines.append(f"- {item}")
+
+    lines.append("")
+
+    # --------------------------------------------------------
+    # Projects
+    # --------------------------------------------------------
+
+    projects = data.get("projects", {})
+
+    lines.append("7. PROJECT ANALYSIS")
+    lines.append(
+        f"Projects Score: {projects.get('score', 0)}/100"
+    )
+
+    for item in projects.get("points", []):
+        lines.append(f"- {item}")
+
+    lines.append("")
+
+    # --------------------------------------------------------
+    # Education
+    # --------------------------------------------------------
+
+    education = data.get("education", {})
+
+    lines.append("8. EDUCATION ANALYSIS")
+    lines.append(
+        f"Education Score: {education.get('score', 0)}/100"
+    )
+
+    for item in education.get("points", []):
+        lines.append(f"- {item}")
+
+    lines.append("")
+
+    # --------------------------------------------------------
+    # ATS
+    # --------------------------------------------------------
+
+    ats = data.get("ats", {})
+
+    lines.append("9. ATS ANALYSIS")
+    lines.append(
+        f"ATS Score: {ats.get('score', 0)}/100"
+    )
+
+    keywords = ats.get("keywords", [])
+
+    if keywords:
+        lines.append("Keywords:")
+        for item in keywords:
+            lines.append(f"- {item}")
+
+    formatting = ats.get("formatting", [])
+
+    if formatting:
+        lines.append("Formatting:")
+        for item in formatting:
+            lines.append(f"- {item}")
+
+    issues = ats.get("issues", [])
+
+    if issues:
+        lines.append("ATS Issues:")
+        for item in issues:
+            lines.append(f"- {item}")
+
+    lines.append("")
+
+    # --------------------------------------------------------
+    # Recommendations
+    # --------------------------------------------------------
+
+    lines.append("10. ACTIONABLE RECOMMENDATIONS")
+
+    for item in data.get("recommendations", []):
+        lines.append(f"- {item}")
+
+    lines.append("")
+
+    # --------------------------------------------------------
+    # Verdict
+    # --------------------------------------------------------
+
+    lines.append("11. FINAL VERDICT")
+    lines.append(
+        data.get("verdict", "")
+    )
+
+    return "\n".join(lines)
+
+
+# ============================================================
 # GEMINI AI REVIEW
 # ============================================================
 
-def generate_ai_review(prompt: str) -> str:
+def generate_ai_review(resume_text: str) -> dict:
 
     if not API_KEY:
 
@@ -117,7 +309,7 @@ def generate_ai_review(prompt: str) -> str:
         print(f"Model: {GEMINI_MODEL}")
 
         # ----------------------------------------------------
-        # Create Gemini client
+        # Gemini Client
         # ----------------------------------------------------
 
         client = genai.Client(
@@ -125,9 +317,107 @@ def generate_ai_review(prompt: str) -> str:
         )
 
         # ----------------------------------------------------
-        # ONE REQUEST ONLY
-        # No retry
-        # No model switching
+        # Structured JSON Prompt
+        # ----------------------------------------------------
+
+        prompt = f"""
+You are an expert professional resume reviewer,
+career advisor and ATS specialist.
+
+Analyze the resume below carefully.
+
+Your response MUST be valid JSON only.
+
+DO NOT:
+- use markdown
+- use ```json
+- add explanations outside JSON
+- invent information
+
+Return EXACTLY this JSON structure:
+
+{{
+  "overallScore": 0,
+
+  "summary": "",
+
+  "strengths": [],
+
+  "weaknesses": [],
+
+  "skills": {{
+    "score": 0,
+    "technical": [],
+    "soft": [],
+    "missing": []
+  }},
+
+  "experience": {{
+    "score": 0,
+    "points": []
+  }},
+
+  "projects": {{
+    "score": 0,
+    "points": []
+  }},
+
+  "education": {{
+    "score": 0,
+    "points": []
+  }},
+
+  "ats": {{
+    "score": 0,
+    "keywords": [],
+    "formatting": [],
+    "issues": []
+  }},
+
+  "recommendations": [],
+
+  "verdict": ""
+}}
+
+RULES:
+
+1. overallScore must be between 0 and 100.
+
+2. Every section score must be between 0 and 100.
+
+3. Only use information actually present in the resume.
+
+4. Never invent internships, jobs, projects, skills,
+   achievements, certifications or experience.
+
+5. If an important section is missing, mention that clearly.
+
+6. Give practical recommendations.
+
+7. Keep each bullet point concise.
+
+8. Use simple professional English.
+
+9. ATS analysis should consider:
+   - keywords
+   - formatting
+   - section structure
+   - readability
+   - ATS compatibility
+
+10. The verdict should be short and useful.
+
+RESUME:
+
+==================================================
+
+{resume_text}
+
+==================================================
+"""
+
+        # ----------------------------------------------------
+        # ONE FAST REQUEST
         # ----------------------------------------------------
 
         response = client.models.generate_content(
@@ -138,18 +428,18 @@ def generate_ai_review(prompt: str) -> str:
 
             config=types.GenerateContentConfig(
 
-                # Minimum reasoning = faster response
                 thinking_config=types.ThinkingConfig(
                     thinking_level="minimal"
                 ),
 
-                # Keep answer reasonably sized
-                max_output_tokens=2500
+                max_output_tokens=2500,
+
+                response_mime_type="application/json"
             )
         )
 
         # ----------------------------------------------------
-        # Validate response
+        # Validate Response
         # ----------------------------------------------------
 
         if not response:
@@ -164,11 +454,96 @@ def generate_ai_review(prompt: str) -> str:
                 "Gemini returned an empty response."
             )
 
+        raw_text = response.text.strip()
+
+        # ----------------------------------------------------
+        # Remove accidental markdown
+        # ----------------------------------------------------
+
+        if raw_text.startswith("```"):
+
+            raw_text = raw_text.replace(
+                "```json",
+                ""
+            )
+
+            raw_text = raw_text.replace(
+                "```",
+                ""
+            )
+
+            raw_text = raw_text.strip()
+
+        # ----------------------------------------------------
+        # Convert JSON
+        # ----------------------------------------------------
+
+        try:
+
+            data = json.loads(raw_text)
+
+        except json.JSONDecodeError as e:
+
+            print("\nINVALID JSON FROM GEMINI:")
+            print(raw_text)
+
+            raise RuntimeError(
+                f"Gemini returned invalid JSON: {str(e)}"
+            )
+
+        # ----------------------------------------------------
+        # Basic Safety Defaults
+        # ----------------------------------------------------
+
+        if not isinstance(data, dict):
+
+            raise RuntimeError(
+                "Gemini returned an invalid JSON structure."
+            )
+
+        data.setdefault("overallScore", 0)
+        data.setdefault("summary", "")
+        data.setdefault("strengths", [])
+        data.setdefault("weaknesses", [])
+        data.setdefault("skills", {})
+        data.setdefault("experience", {})
+        data.setdefault("projects", {})
+        data.setdefault("education", {})
+        data.setdefault("ats", {})
+        data.setdefault("recommendations", [])
+        data.setdefault("verdict", "")
+
+        # Nested defaults
+
+        data["skills"].setdefault("score", 0)
+        data["skills"].setdefault("technical", [])
+        data["skills"].setdefault("soft", [])
+        data["skills"].setdefault("missing", [])
+
+        data["experience"].setdefault("score", 0)
+        data["experience"].setdefault("points", [])
+
+        data["projects"].setdefault("score", 0)
+        data["projects"].setdefault("points", [])
+
+        data["education"].setdefault("score", 0)
+        data["education"].setdefault("points", [])
+
+        data["ats"].setdefault("score", 0)
+        data["ats"].setdefault("keywords", [])
+        data["ats"].setdefault("formatting", [])
+        data["ats"].setdefault("issues", [])
+
         print("\n======================================")
         print("GEMINI SUCCESS")
+        print("STRUCTURED JSON RECEIVED")
         print("======================================")
 
-        return response.text
+        return data
+
+    except HTTPException:
+
+        raise
 
     except Exception as e:
 
@@ -182,7 +557,7 @@ def generate_ai_review(prompt: str) -> str:
         error_text = str(e).lower()
 
         # ----------------------------------------------------
-        # 503 / overloaded
+        # 503
         # ----------------------------------------------------
 
         if (
@@ -219,7 +594,7 @@ def generate_ai_review(prompt: str) -> str:
             )
 
         # ----------------------------------------------------
-        # Other Gemini errors
+        # Other Errors
         # ----------------------------------------------------
 
         raise HTTPException(
@@ -336,98 +711,45 @@ def review_resume(
         # LIMIT PROMPT SIZE
         # ====================================================
 
-        # 25,000 characters is enough for most resumes
         resume_text = resume_text[:25000]
 
         # ====================================================
-        # AI PROMPT
-        # ====================================================
-
-        prompt = f"""
-You are an expert professional resume reviewer,
-career advisor and ATS specialist.
-
-Analyze the resume below.
-
-Give a concise but useful professional review.
-
-Use exactly these sections:
-
-1. OVERALL SCORE
-Give a score out of 100.
-
-2. RESUME SUMMARY
-Give a short assessment.
-
-3. KEY STRENGTHS
-List the strongest points.
-
-4. WEAKNESSES
-List important weaknesses.
-
-5. SKILLS ANALYSIS
-Analyze technical and soft skills.
-
-6. EXPERIENCE ANALYSIS
-Analyze internships, jobs and practical experience.
-
-7. PROJECT ANALYSIS
-Analyze projects mentioned in the resume.
-
-8. EDUCATION ANALYSIS
-Review education.
-
-9. ATS ANALYSIS
-Check:
-- ATS friendliness
-- Keywords
-- Formatting
-- Section structure
-- Readability
-
-10. ACTIONABLE RECOMMENDATIONS
-Give practical improvements.
-
-11. FINAL VERDICT
-Give a short conclusion.
-
-IMPORTANT RULES:
-
-- Do not invent information.
-- Only use information present in the resume.
-- Be honest and constructive.
-- Keep the response concise.
-- Use simple professional language.
-- Use bullet points where appropriate.
-
-RESUME:
-
-==================================================
-
-{resume_text}
-
-==================================================
-"""
-
-        # ====================================================
-        # GEMINI
+        # GEMINI ANALYSIS
         # ====================================================
 
         print("\nSending resume to Gemini...")
 
-        analysis = generate_ai_review(
-            prompt
+        structured_analysis = generate_ai_review(
+            resume_text
+        )
+
+        # ====================================================
+        # CREATE OLD-FORMAT TEXT
+        # Keeps current App.jsx working
+        # ====================================================
+
+        analysis_text = format_analysis(
+            structured_analysis
         )
 
         # ====================================================
         # RETURN
         # ====================================================
 
-        print("\nResume analysis completed successfully.")
+        print(
+            "\nResume analysis completed successfully."
+        )
 
         return {
+
             "success": True,
-            "analysis": analysis
+
+            # Existing frontend can continue using this
+            "analysis": analysis_text,
+
+            # New structured data for our upgraded frontend
+            "structured": structured_analysis
+
         }
 
     except HTTPException:

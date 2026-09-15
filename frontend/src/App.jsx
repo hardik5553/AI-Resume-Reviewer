@@ -1,24 +1,75 @@
-import React, { useState } from 'react';
-import axios from 'axios';
+import React, { useState } from "react";
+import axios from "axios";
+
+const BACKEND_URL =
+  "https://ai-resume-reviewer-e412.onrender.com/api/review-resume";
 
 export default function App() {
   const [file, setFile] = useState(null);
+  const [fileName, setFileName] = useState("");
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState('');
-  const [fileName, setFileName] = useState('');
+  const [result, setResult] = useState("");
+  const [error, setError] = useState("");
+  const [dragActive, setDragActive] = useState(false);
+
+  // =========================================================
+  // FILE SELECTION
+  // =========================================================
+
+  const selectFile = (selectedFile) => {
+    if (!selectedFile) return;
+
+    if (!selectedFile.name.toLowerCase().endsWith(".pdf")) {
+      setError("Please upload a PDF resume.");
+      return;
+    }
+
+    if (selectedFile.size > 10 * 1024 * 1024) {
+      setError("PDF must be smaller than 10MB.");
+      return;
+    }
+
+    setFile(selectedFile);
+    setFileName(selectedFile.name);
+    setError("");
+    setResult("");
+  };
 
   const handleFileChange = (e) => {
-    const selectedFile = e.target.files[0];
-    if (selectedFile) {
-      setFile(selectedFile);
-      setFileName(selectedFile.name);
-    }
+    selectFile(e.target.files[0]);
   };
+
+  // =========================================================
+  // DRAG & DROP
+  // =========================================================
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setDragActive(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    setDragActive(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragActive(false);
+
+    const droppedFile = e.dataTransfer.files[0];
+    selectFile(droppedFile);
+  };
+
+  // =========================================================
+  // ANALYZE RESUME
+  // =========================================================
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
     if (!file) {
-      alert("Please upload a PDF resume first.");
+      setError("Please upload a PDF resume first.");
       return;
     }
 
@@ -26,114 +77,626 @@ export default function App() {
     formData.append("file", file);
 
     setLoading(true);
-    setResult('');
+    setResult("");
+    setError("");
+
     try {
-      // Explicit headers add kiye gaye hain taaki browser CORS/Network block na kare
       const response = await axios.post(
-        "https://ai-resume-reviewer-e412.onrender.com/api/review-resume", 
+        BACKEND_URL,
         formData,
         {
           headers: {
             "Content-Type": "multipart/form-data",
-          }
+          },
+          timeout: 180000,
         }
       );
-      setResult(response.data.analysis);
-    } catch (error) {
-      console.error("Complete Error Details:", error);
-      alert("Failed to analyze resume. Ensure backend server is running.");
+
+      if (response.data?.analysis) {
+        setResult(response.data.analysis);
+      } else {
+        setError("AI returned an empty analysis.");
+      }
+    } catch (err) {
+      console.error("Resume Analysis Error:", err);
+
+      if (err.response?.data?.detail) {
+        setError(err.response.data.detail);
+      } else if (err.code === "ECONNABORTED") {
+        setError(
+          "The AI server is taking longer than expected. Please try again."
+        );
+      } else {
+        setError(
+          "Unable to connect with the AI server. Please try again."
+        );
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-indigo-950 text-slate-100 flex flex-col font-sans">
-      {/* Header */}
-      <header className="border-b border-slate-700/60 bg-slate-900/50 backdrop-blur-md sticky top-0 z-10 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="bg-indigo-600 p-2 rounded-xl text-white font-bold shadow-lg shadow-indigo-500/30">
-            ✨
+  // =========================================================
+  // COPY REPORT
+  // =========================================================
+
+  const copyReport = async () => {
+    try {
+      await navigator.clipboard.writeText(result);
+      alert("Report copied successfully!");
+    } catch {
+      alert("Unable to copy report.");
+    }
+  };
+
+  // =========================================================
+  // DOWNLOAD REPORT
+  // =========================================================
+
+  const downloadReport = () => {
+    const content = `AI RESUME INTELLIGENCE
+================================
+
+Resume: ${fileName}
+
+${result}
+
+================================
+Generated by AI Resume Intelligence
+`;
+
+    const blob = new Blob([content], {
+      type: "text/plain;charset=utf-8",
+    });
+
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "AI-Resume-Review.txt";
+
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    URL.revokeObjectURL(url);
+  };
+
+  // =========================================================
+  // RESET
+  // =========================================================
+
+  const resetAnalysis = () => {
+    setFile(null);
+    setFileName("");
+    setResult("");
+    setError("");
+    setLoading(false);
+  };
+
+  // =========================================================
+  // EXTRACT SCORE
+  // =========================================================
+
+  const extractScore = () => {
+    if (!result) return null;
+
+    const match = result.match(
+      /OVERALL SCORE[\s\S]{0,100}?(\d{1,3})\s*(?:\/\s*100|out of 100)/i
+    );
+
+    if (match) {
+      return Math.min(parseInt(match[1]), 100);
+    }
+
+    return null;
+  };
+
+  const score = extractScore();
+
+  // =========================================================
+  // EXTRACT SECTION
+  // =========================================================
+
+  const getSection = (sectionName, nextSections = []) => {
+    if (!result) return "";
+
+    const escapedName = sectionName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    const nextPattern =
+      nextSections.length > 0
+        ? nextSections
+            .map((name) =>
+              name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+            )
+            .join("|")
+        : "$";
+
+    const regex = new RegExp(
+      `${escapedName}[\\s\\S]*?(?=${nextPattern}|$)`,
+      "i"
+    );
+
+    const match = result.match(regex);
+
+    if (!match) return "";
+
+    return match[0]
+      .replace(new RegExp(`^.*?${escapedName}`, "i"), "")
+      .trim();
+  };
+
+  const sections = [
+    "RESUME SUMMARY",
+    "KEY STRENGTHS",
+    "WEAKNESSES",
+    "SKILLS ANALYSIS",
+    "EXPERIENCE ANALYSIS",
+    "PROJECT ANALYSIS",
+    "EDUCATION ANALYSIS",
+    "ATS ANALYSIS",
+    "ACTIONABLE RECOMMENDATIONS",
+    "FINAL VERDICT",
+  ];
+
+  const getCleanSection = (name) => {
+    const index = sections.indexOf(name);
+    const next = sections.slice(index + 1);
+
+    return getSection(name, next)
+      .replace(/^\d+\.\s*/i, "")
+      .trim();
+  };
+
+  // =========================================================
+  // SECTION CARD
+  // =========================================================
+
+  const SectionCard = ({ number, title, icon, content }) => {
+    if (!content) return null;
+
+    return (
+      <div className="group bg-slate-900/70 border border-slate-700/70 rounded-2xl p-5 md:p-6 hover:border-indigo-500/50 transition-all duration-300 hover:-translate-y-0.5">
+        <div className="flex items-start gap-4">
+          <div className="flex-shrink-0 w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-xl">
+            {icon}
           </div>
-          <span className="text-xl font-bold tracking-wide bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent">
-            AI Resume Intelligence
-          </span>
+
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-xs font-bold text-indigo-400">
+                {String(number).padStart(2, "0")}
+              </span>
+
+              <h3 className="text-base md:text-lg font-bold text-white">
+                {title}
+              </h3>
+            </div>
+
+            <div className="text-sm md:text-base text-slate-300 leading-7 whitespace-pre-wrap">
+              {content}
+            </div>
+          </div>
         </div>
-        <span className="text-xs uppercase tracking-wider bg-slate-800 border border-slate-700 px-3 py-1 rounded-full text-indigo-300">
-          Gemini 1.5 Flash Engine
-        </span>
+      </div>
+    );
+  };
+
+  return (
+    <div className="min-h-screen bg-[#070b16] text-slate-100 overflow-x-hidden">
+
+      {/* =====================================================
+          BACKGROUND GLOW
+      ===================================================== */}
+
+      <div className="fixed inset-0 pointer-events-none overflow-hidden">
+        <div className="absolute -top-40 -left-40 w-96 h-96 bg-indigo-600/10 rounded-full blur-3xl" />
+        <div className="absolute top-1/3 -right-40 w-96 h-96 bg-cyan-500/10 rounded-full blur-3xl" />
+      </div>
+
+      {/* =====================================================
+          HEADER
+      ===================================================== */}
+
+      <header className="sticky top-0 z-50 border-b border-slate-800/80 bg-[#070b16]/80 backdrop-blur-xl">
+        <div className="max-w-6xl mx-auto px-5 md:px-8 py-4 flex items-center justify-between">
+
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-cyan-500 flex items-center justify-center text-xl shadow-lg shadow-indigo-500/20">
+              ✦
+            </div>
+
+            <div>
+              <h1 className="font-bold text-white tracking-tight">
+                AI Resume Intelligence
+              </h1>
+
+              <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500">
+                Career Intelligence Platform
+              </p>
+            </div>
+          </div>
+
+          <div className="hidden sm:flex items-center gap-2 text-xs">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="text-slate-400">
+              AI Engine Online
+            </span>
+          </div>
+        </div>
       </header>
 
-      {/* Main Content */}
-      <main className="flex-1 max-w-5xl w-full mx-auto p-6 md:p-10 flex flex-col gap-8">
-        <div className="text-center space-y-2">
-          <h1 className="text-3xl md:text-5xl font-extrabold tracking-tight text-white">
-            Elevate Your Career with <span className="text-indigo-400">AI Precision</span>
-          </h1>
-          <p className="text-slate-400 text-sm md:text-base max-w-xl mx-auto">
-            Upload your resume to get deep professional insights, formatting analysis, and actionable improvement suggestions instantly.
+      {/* =====================================================
+          MAIN
+      ===================================================== */}
+
+      <main className="relative max-w-6xl mx-auto px-5 md:px-8 py-10 md:py-16">
+
+        {/* HERO */}
+
+        <section className="text-center max-w-3xl mx-auto mb-10">
+
+          <div className="inline-flex items-center gap-2 px-4 py-2 mb-5 rounded-full border border-indigo-500/20 bg-indigo-500/5 text-indigo-300 text-xs font-medium">
+            ✨ AI-Powered Resume Analysis
+          </div>
+
+          <h2 className="text-4xl md:text-6xl font-black tracking-tight leading-tight text-white">
+            Turn Your Resume Into
+            <span className="block bg-gradient-to-r from-indigo-400 via-blue-400 to-cyan-400 bg-clip-text text-transparent">
+              Your Career Advantage.
+            </span>
+          </h2>
+
+          <p className="mt-5 text-slate-400 text-sm md:text-base leading-7 max-w-2xl mx-auto">
+            Get an intelligent resume review covering ATS compatibility,
+            strengths, weaknesses, skills, projects and actionable career
+            recommendations.
           </p>
-        </div>
+        </section>
 
-        {/* Upload Card */}
-        <form onSubmit={handleSubmit} className="bg-slate-800/60 border border-slate-700/80 backdrop-blur-xl p-8 rounded-2xl shadow-2xl flex flex-col gap-6">
-          <div className="flex flex-col items-center justify-center border-2 border-dashed border-slate-600 hover:border-indigo-500 transition rounded-xl p-8 bg-slate-900/40 relative cursor-pointer group">
-            <input 
-              type="file" 
-              accept=".pdf" 
-              onChange={handleFileChange}
-              className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
-            />
-            <div className="flex flex-col items-center text-center gap-2 pointer-events-none">
-              <div className="w-12 h-12 rounded-full bg-indigo-500/10 flex items-center justify-center text-indigo-400 group-hover:scale-110 transition">
-                📄
-              </div>
-              <p className="text-sm font-medium text-slate-200">
-                {fileName ? <span className="text-indigo-300 font-semibold">{fileName}</span> : "Drop your PDF resume here, or browse"}
-              </p>
-              <p className="text-xs text-slate-400">Supports PDF format up to 10MB</p>
-            </div>
-          </div>
+        {/* =================================================
+            UPLOAD CARD
+        ================================================= */}
 
-          <button 
-            type="submit" 
-            disabled={loading}
-            className="w-full bg-gradient-to-r from-indigo-600 to-blue-600 text-white font-semibold py-3 px-6 rounded-xl shadow-lg shadow-indigo-600/30 hover:opacity-95 transition-all duration-200 disabled:opacity-50 flex items-center justify-center gap-2"
+        <section className="max-w-3xl mx-auto">
+
+          <form
+            onSubmit={handleSubmit}
+            className="bg-slate-900/70 border border-slate-800 rounded-3xl p-5 md:p-7 shadow-2xl shadow-black/20 backdrop-blur-xl"
           >
-            {loading ? (
-              <>
-                <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
-                </svg>
-                Analyzing Profile...
-              </>
-            ) : (
-              "Generate AI Review"
-            )}
-          </button>
-        </form>
 
-        {/* Results Section */}
-        {result && (
-          <div className="bg-slate-800/80 border border-slate-700/80 backdrop-blur-xl p-6 md:p-8 rounded-2xl shadow-2xl animate-fade-in">
-            <div className="flex items-center justify-between border-b border-slate-700 pb-4 mb-6">
-              <h2 className="text-lg font-bold text-indigo-300 flex items-center gap-2">
-                📊 Comprehensive Evaluation Report
-              </h2>
-              <button 
-                onClick={() => navigator.clipboard.writeText(result)}
-                className="text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 px-3 py-1.5 rounded-lg transition"
+            <div
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              className={`relative rounded-2xl border-2 border-dashed p-8 md:p-12 text-center transition-all duration-300 ${
+                dragActive
+                  ? "border-indigo-400 bg-indigo-500/10 scale-[1.01]"
+                  : "border-slate-700 bg-slate-950/50 hover:border-indigo-500/50"
+              }`}
+            >
+
+              <input
+                type="file"
+                accept=".pdf"
+                onChange={handleFileChange}
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+              />
+
+              <div className="pointer-events-none">
+
+                <div className="mx-auto mb-5 w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500/20 to-cyan-500/10 border border-indigo-500/20 flex items-center justify-center text-3xl">
+                  📄
+                </div>
+
+                {fileName ? (
+                  <>
+                    <p className="text-indigo-300 font-semibold break-all">
+                      {fileName}
+                    </p>
+
+                    <p className="mt-2 text-xs text-emerald-400">
+                      ✓ Resume ready for analysis
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-white font-semibold text-lg">
+                      Drop your resume here
+                    </p>
+
+                    <p className="text-slate-500 text-sm mt-2">
+                      or click to browse from your computer
+                    </p>
+                  </>
+                )}
+
+                <p className="text-xs text-slate-600 mt-4">
+                  PDF only • Maximum 10MB
+                </p>
+              </div>
+            </div>
+
+            {/* ERROR */}
+
+            {error && (
+              <div className="mt-4 p-4 rounded-xl border border-red-500/20 bg-red-500/5 text-red-300 text-sm">
+                ⚠️ {error}
+              </div>
+            )}
+
+            {/* BUTTON */}
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="mt-5 w-full py-4 rounded-xl font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 shadow-lg shadow-indigo-600/20 transition-all duration-300 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-3"
+            >
+              {loading ? (
+                <>
+                  <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  AI is analyzing your resume...
+                </>
+              ) : (
+                <>
+                  ✨ Generate Intelligent Review
+                </>
+              )}
+            </button>
+
+          </form>
+
+          {/* =================================================
+              LOADING MESSAGE
+          ================================================= */}
+
+          {loading && (
+            <div className="mt-6 text-center animate-fade-in">
+              <p className="text-sm text-slate-400">
+                🔍 Extracting resume insights...
+              </p>
+
+              <p className="text-xs text-slate-600 mt-1">
+                This may take a little time on the free AI server.
+              </p>
+            </div>
+          )}
+
+        </section>
+
+        {/* =================================================
+            RESULTS
+        ================================================= */}
+
+        {result && !loading && (
+          <section className="mt-12 animate-slide-up">
+
+            {/* RESULT HEADER */}
+
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-2xl">📊</span>
+
+                  <h2 className="text-2xl md:text-3xl font-black text-white">
+                    Resume Intelligence Report
+                  </h2>
+                </div>
+
+                <p className="text-sm text-slate-500 mt-2">
+                  AI-generated insights for {fileName}
+                </p>
+              </div>
+
+              <div className="flex gap-2">
+
+                <button
+                  onClick={copyReport}
+                  className="px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-sm text-slate-300 hover:text-white hover:border-indigo-500/40 transition"
+                >
+                  📋 Copy
+                </button>
+
+                <button
+                  onClick={downloadReport}
+                  className="px-4 py-2.5 rounded-xl bg-indigo-600 text-sm font-semibold text-white hover:bg-indigo-500 transition"
+                >
+                  ↓ Download
+                </button>
+
+              </div>
+            </div>
+
+            {/* =================================================
+                SCORE CARD
+            ================================================= */}
+
+            {score !== null && (
+              <div className="mb-6 bg-gradient-to-br from-indigo-950/60 to-slate-900/80 border border-indigo-500/20 rounded-3xl p-6 md:p-8">
+
+                <div className="flex flex-col md:flex-row items-center gap-8">
+
+                  <div
+                    className="w-36 h-36 rounded-full flex items-center justify-center"
+                    style={{
+                      background: `conic-gradient(#6366f1 ${score * 3.6}deg, #1e293b 0deg)`,
+                    }}
+                  >
+                    <div className="w-28 h-28 rounded-full bg-[#0b1020] flex flex-col items-center justify-center">
+                      <span className="text-4xl font-black text-white">
+                        {score}
+                      </span>
+                      <span className="text-xs text-slate-500">
+                        OUT OF 100
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="text-center md:text-left">
+
+                    <p className="text-xs uppercase tracking-[0.2em] text-indigo-400 font-bold">
+                      Overall Resume Score
+                    </p>
+
+                    <h3 className="text-2xl font-bold text-white mt-2">
+                      {score >= 80
+                        ? "Excellent Resume 🚀"
+                        : score >= 65
+                        ? "Good Foundation 👍"
+                        : score >= 50
+                        ? "Needs Improvement ⚡"
+                        : "Major Improvements Needed 🔧"}
+                    </h3>
+
+                    <p className="text-sm text-slate-400 mt-2 max-w-xl">
+                      Your score is based on the AI's overall assessment of
+                      content quality, skills, experience, projects and ATS
+                      readiness.
+                    </p>
+
+                  </div>
+
+                </div>
+              </div>
+            )}
+
+            {/* =================================================
+                ANALYSIS CARDS
+            ================================================= */}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+
+              <SectionCard
+                number={1}
+                title="Resume Summary"
+                icon="📝"
+                content={getCleanSection("RESUME SUMMARY")}
+              />
+
+              <SectionCard
+                number={2}
+                title="Key Strengths"
+                icon="💪"
+                content={getCleanSection("KEY STRENGTHS")}
+              />
+
+              <SectionCard
+                number={3}
+                title="Weaknesses"
+                icon="⚠️"
+                content={getCleanSection("WEAKNESSES")}
+              />
+
+              <SectionCard
+                number={4}
+                title="Skills Analysis"
+                icon="🧠"
+                content={getCleanSection("SKILLS ANALYSIS")}
+              />
+
+              <SectionCard
+                number={5}
+                title="Experience Analysis"
+                icon="💼"
+                content={getCleanSection("EXPERIENCE ANALYSIS")}
+              />
+
+              <SectionCard
+                number={6}
+                title="Project Analysis"
+                icon="🚀"
+                content={getCleanSection("PROJECT ANALYSIS")}
+              />
+
+              <SectionCard
+                number={7}
+                title="Education Analysis"
+                icon="🎓"
+                content={getCleanSection("EDUCATION ANALYSIS")}
+              />
+
+              <SectionCard
+                number={8}
+                title="ATS Analysis"
+                icon="🤖"
+                content={getCleanSection("ATS ANALYSIS")}
+              />
+
+              <div className="md:col-span-2">
+
+                <SectionCard
+                  number={9}
+                  title="Actionable Recommendations"
+                  icon="💡"
+                  content={getCleanSection(
+                    "ACTIONABLE RECOMMENDATIONS"
+                  )}
+                />
+
+              </div>
+
+              <div className="md:col-span-2">
+
+                <SectionCard
+                  number={10}
+                  title="Final Verdict"
+                  icon="🏆"
+                  content={getCleanSection("FINAL VERDICT")}
+                />
+
+              </div>
+
+            </div>
+
+            {/* =================================================
+                RAW REPORT FALLBACK
+            ================================================= */}
+
+            <details className="mt-6 bg-slate-900/70 border border-slate-800 rounded-2xl p-5">
+
+              <summary className="cursor-pointer text-sm font-semibold text-slate-400 hover:text-white">
+                View complete AI response
+              </summary>
+
+              <div className="mt-4 whitespace-pre-wrap text-sm text-slate-400 leading-7">
+                {result}
+              </div>
+
+            </details>
+
+            {/* =================================================
+                ANALYZE AGAIN
+            ================================================= */}
+
+            <div className="text-center mt-8">
+
+              <button
+                onClick={resetAnalysis}
+                className="px-6 py-3 rounded-xl border border-slate-700 bg-slate-900 text-slate-300 hover:text-white hover:border-indigo-500/50 transition"
               >
-                Copy Report
+                ↻ Analyze Another Resume
               </button>
+
             </div>
-            <div className="whitespace-pre-wrap text-slate-300 text-sm md:text-base leading-relaxed bg-slate-900/50 p-6 rounded-xl border border-slate-800">
-              {result}
-            </div>
-          </div>
+
+          </section>
         )}
+
       </main>
+
+      {/* =====================================================
+          FOOTER
+      ===================================================== */}
+
+      <footer className="border-t border-slate-800/80 py-6 text-center">
+
+        <p className="text-xs text-slate-600">
+          AI Resume Intelligence • Built for smarter career decisions
+        </p>
+
+      </footer>
+
     </div>
   );
 }
