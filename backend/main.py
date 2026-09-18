@@ -42,7 +42,7 @@ app.add_middleware(
 API_KEY = os.getenv("GEMINI_API_KEY")
 
 # Use a currently supported Gemini Flash model.
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-3.6-flash"
 
 
 # ============================================================
