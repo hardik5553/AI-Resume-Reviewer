@@ -43,7 +43,7 @@ app.add_middleware(
 # ============================================================
 
 API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = "gemini-3.6-flash"
+GEMINI_MODEL = "gemini-2.5-flash"
 
 MONGO_URI = os.getenv("MONGO_URI")
 
@@ -214,6 +214,51 @@ def normalize_analysis(data: dict):
     job_match["summary"] = clean_text(job_match.get("summary", ""))
     data["jobMatch"] = job_match
 
+    # ============================================================
+    # FEATURE 4: MULTI-ROLE TARGETING NORMALIZATION
+    # ============================================================
+    raw_multi_role = data.get("multiRoleTargeting", [])
+    normalized_multi_roles = []
+
+    if isinstance(raw_multi_role, list) and len(raw_multi_role) > 0:
+        for item in raw_multi_role:
+            if isinstance(item, dict):
+                normalized_multi_roles.append({
+                    "role": clean_text(item.get("role", "Target Role")),
+                    "matchScore": safe_score(item.get("matchScore", 0)),
+                    "prioritySkills": clean_list(item.get("prioritySkills", [])),
+                    "projectToHighlight": clean_text(item.get("projectToHighlight", "")),
+                    "reorderAdvice": clean_text(item.get("reorderAdvice", ""))
+                })
+
+    # Default multi-role fallback if empty
+    if not normalized_multi_roles:
+        normalized_multi_roles = [
+            {
+                "role": "Frontend Developer",
+                "matchScore": safe_score(skills.get("score", 65)),
+                "prioritySkills": ["React", "JavaScript", "HTML5", "CSS3 / Tailwind"],
+                "projectToHighlight": "Portfolio or responsive web interface projects",
+                "reorderAdvice": "Place UI frameworks and interactive web projects right below Summary."
+            },
+            {
+                "role": "Backend Developer",
+                "matchScore": safe_score(experience.get("score", 60)),
+                "prioritySkills": ["Python", "FastAPI / Spring Boot", "REST APIs", "SQL / MongoDB"],
+                "projectToHighlight": "API microservices, database schemas, and server integration projects",
+                "reorderAdvice": "Prioritize backend systems, query optimization, and architectural contributions."
+            },
+            {
+                "role": "Full Stack Engineer",
+                "matchScore": safe_score(data.get("overallScore", 68)),
+                "prioritySkills": ["React", "FastAPI / Node.js", "Database Design", "Git & CI/CD"],
+                "projectToHighlight": "End-to-end full-stack applications with active deployment",
+                "reorderAdvice": "Showcase complete workflow from frontend state management to backend persistence."
+            }
+        ]
+
+    data["multiRoleTargeting"] = normalized_multi_roles
+
     return data
 
 
@@ -299,11 +344,20 @@ def format_analysis(data: dict):
         for item in job_match["recommendations"]: lines.append(f"- {item}")
     lines.append("")
 
-    lines.append("11. ACTIONABLE RECOMMENDATIONS")
+    multi_roles = data.get("multiRoleTargeting", [])
+    if multi_roles:
+        lines.append("11. MULTI-ROLE TARGETING ANALYSIS")
+        for mr in multi_roles:
+            lines.append(f"- Role: {mr.get('role')} (Match: {mr.get('matchScore')}/100)")
+            lines.append(f"  Highlight Project: {mr.get('projectToHighlight')}")
+            lines.append(f"  Advice: {mr.get('reorderAdvice')}")
+        lines.append("")
+
+    lines.append("12. ACTIONABLE RECOMMENDATIONS")
     for item in data.get("recommendations", []): lines.append(f"- {item}")
     lines.append("")
 
-    lines.append("12. FINAL VERDICT")
+    lines.append("13. FINAL VERDICT")
     lines.append(data.get("verdict", ""))
 
     return "\n".join(lines)
@@ -411,6 +465,29 @@ Return EXACTLY this structure:
         "recommendations": [],
         "summary": ""
     }},
+    "multiRoleTargeting": [
+        {{
+            "role": "Frontend Developer",
+            "matchScore": 0,
+            "prioritySkills": ["", ""],
+            "projectToHighlight": "",
+            "reorderAdvice": ""
+        }},
+        {{
+            "role": "Backend Developer",
+            "matchScore": 0,
+            "prioritySkills": ["", ""],
+            "projectToHighlight": "",
+            "reorderAdvice": ""
+        }},
+        {{
+            "role": "Full Stack Developer",
+            "matchScore": 0,
+            "prioritySkills": ["", ""],
+            "projectToHighlight": "",
+            "reorderAdvice": ""
+        }}
+    ],
     "recommendations": ["", "", ""],
     "verdict": ""
 }}
@@ -561,7 +638,7 @@ def review_resume(
                 print("Could not delete temporary file:", str(e))
 
 # ============================================================
-# GET USER REPORTS API (NEW)
+# GET USER REPORTS API
 # ============================================================
 
 @app.get("/api/user-reports")
@@ -578,7 +655,6 @@ def get_user_reports(user_id: str):
         
         reports = []
         for doc in cursor:
-            # MongoDB '_id' ko string mein convert karna zaroori hai JSON ke liye
             doc["_id"] = str(doc["_id"])
             reports.append(doc)
             
