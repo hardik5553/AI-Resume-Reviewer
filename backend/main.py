@@ -12,6 +12,7 @@ import pdfplumber
 from google import genai
 from google.genai import types
 from pymongo import MongoClient
+import certifi
 
 
 # ============================================================
@@ -53,7 +54,7 @@ resume_reports_collection = None
 # Initialize MongoDB Connection
 if MONGO_URI:
     try:
-        db_client = MongoClient(MONGO_URI)
+        db_client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
         db = db_client["resume_ai_db"]
         resume_reports_collection = db["resume_reports"]
         print("MongoDB Connected Successfully.")

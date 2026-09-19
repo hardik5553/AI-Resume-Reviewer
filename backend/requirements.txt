@@ -4,4 +4,4 @@ pdfplumber
 python-multipart
 pydantic
 google-genai
-pymongo
+pymongo 
