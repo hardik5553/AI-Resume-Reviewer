@@ -3,6 +3,7 @@ import json
 import tempfile
 import traceback
 import re
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import pdfplumber
 from google import genai
 from google.genai import types
+from pymongo import MongoClient
 
 
 # ============================================================
@@ -18,7 +20,7 @@ from google.genai import types
 
 app = FastAPI(
     title="AI Resume Reviewer API",
-    version="5.0.0"
+    version="6.1.0"
 )
 
 
@@ -36,13 +38,27 @@ app.add_middleware(
 
 
 # ============================================================
-# GEMINI CONFIGURATION
+# CONFIGURATIONS (GEMINI & MONGODB)
 # ============================================================
 
 API_KEY = os.getenv("GEMINI_API_KEY")
-
-# Use a currently supported Gemini Flash model.
 GEMINI_MODEL = "gemini-3.6-flash"
+
+MONGO_URI = os.getenv("MONGO_URI")
+
+db_client = None
+db = None
+resume_reports_collection = None
+
+# Initialize MongoDB Connection
+if MONGO_URI:
+    try:
+        db_client = MongoClient(MONGO_URI)
+        db = db_client["resume_ai_db"]
+        resume_reports_collection = db["resume_reports"]
+        print("MongoDB Connected Successfully.")
+    except Exception as e:
+        print(f"MongoDB Connection Error: {e}")
 
 
 # ============================================================
@@ -54,7 +70,7 @@ def home():
     return {
         "status": "online",
         "message": "AI Resume Reviewer API is running",
-        "version": "5.0.0"
+        "version": "6.1.0"
     }
 
 
@@ -67,7 +83,8 @@ def health():
     return {
         "status": "healthy",
         "model": GEMINI_MODEL,
-        "gemini_configured": bool(API_KEY)
+        "gemini_configured": bool(API_KEY),
+        "db_connected": bool(resume_reports_collection is not None)
     }
 
 
@@ -76,26 +93,17 @@ def health():
 # ============================================================
 
 def extract_text_from_pdf(file_path: str) -> str:
-
     text_parts = []
-
     try:
-
         with pdfplumber.open(file_path) as pdf:
-
             for page in pdf.pages:
-
                 extracted = page.extract_text()
-
                 if extracted:
                     text_parts.append(extracted)
-
     except Exception as e:
-
         raise RuntimeError(
             f"Failed to extract text from PDF: {str(e)}"
         )
-
     return "\n".join(text_parts).strip()
 
 
@@ -104,21 +112,10 @@ def extract_text_from_pdf(file_path: str) -> str:
 # ============================================================
 
 def safe_score(value):
-
     try:
-
         score = int(float(value))
-
-        return max(
-            0,
-            min(
-                100,
-                score
-            )
-        )
-
+        return max(0, min(100, score))
     except Exception:
-
         return 0
 
 
@@ -127,37 +124,13 @@ def safe_score(value):
 # ============================================================
 
 def clean_text(value):
-
     if value is None:
         return ""
-
     value = str(value).strip()
-
-    # Remove markdown bullets
-    value = re.sub(
-        r"^[\-\*\•\·]\s*",
-        "",
-        value
-    )
-
-    # Remove numbering such as:
-    # 1. text
-    # 2) text
-    # 01. text
-
-    value = re.sub(
-        r"^\d{1,2}[.)]\s*",
-        "",
-        value
-    )
-
-    # Remove standalone number
-    if re.fullmatch(
-        r"\d{1,2}\.",
-        value
-    ):
+    value = re.sub(r"^[\-\*\•\·]\s*", "", value)
+    value = re.sub(r"^\d{1,2}[.)]\s*", "", value)
+    if re.fullmatch(r"\d{1,2}\.", value):
         return ""
-
     return value.strip()
 
 
@@ -166,19 +139,13 @@ def clean_text(value):
 # ============================================================
 
 def clean_list(items):
-
     if not isinstance(items, list):
         return []
-
     cleaned = []
-
     for item in items:
-
         text = clean_text(item)
-
         if text:
             cleaned.append(text)
-
     return cleaned
 
 
@@ -187,219 +154,64 @@ def clean_list(items):
 # ============================================================
 
 def normalize_analysis(data: dict):
-
     if not isinstance(data, dict):
+        raise RuntimeError("Invalid analysis structure.")
 
-        raise RuntimeError(
-            "Invalid analysis structure."
-        )
+    data["overallScore"] = safe_score(data.get("overallScore", 0))
+    data["summary"] = clean_text(data.get("summary", ""))
+    data["strengths"] = clean_list(data.get("strengths", []))
+    data["weaknesses"] = clean_list(data.get("weaknesses", []))
+    data["recommendations"] = clean_list(data.get("recommendations", []))
+    data["verdict"] = clean_text(data.get("verdict", ""))
 
-    # ========================================================
-    # TOP LEVEL
-    # ========================================================
-
-    data["overallScore"] = safe_score(
-        data.get("overallScore", 0)
-    )
-
-    data["summary"] = clean_text(
-        data.get("summary", "")
-    )
-
-    data["strengths"] = clean_list(
-        data.get("strengths", [])
-    )
-
-    data["weaknesses"] = clean_list(
-        data.get("weaknesses", [])
-    )
-
-    data["recommendations"] = clean_list(
-        data.get("recommendations", [])
-    )
-
-    data["verdict"] = clean_text(
-        data.get("verdict", "")
-    )
-
-
-    # ========================================================
-    # SKILLS
-    # ========================================================
-
-    skills = data.get(
-        "skills",
-        {}
-    )
-
+    skills = data.get("skills", {})
     if not isinstance(skills, dict):
         skills = {}
-
-    skills["score"] = safe_score(
-        skills.get("score", 0)
-    )
-
-    skills["technical"] = clean_list(
-        skills.get("technical", [])
-    )
-
-    skills["soft"] = clean_list(
-        skills.get("soft", [])
-    )
-
-    skills["missing"] = clean_list(
-        skills.get("missing", [])
-    )
-
+    skills["score"] = safe_score(skills.get("score", 0))
+    skills["technical"] = clean_list(skills.get("technical", []))
+    skills["soft"] = clean_list(skills.get("soft", []))
+    skills["missing"] = clean_list(skills.get("missing", []))
     data["skills"] = skills
 
-
-    # ========================================================
-    # EXPERIENCE
-    # ========================================================
-
-    experience = data.get(
-        "experience",
-        {}
-    )
-
+    experience = data.get("experience", {})
     if not isinstance(experience, dict):
         experience = {}
-
-    experience["score"] = safe_score(
-        experience.get("score", 0)
-    )
-
-    experience["points"] = clean_list(
-        experience.get("points", [])
-    )
-
+    experience["score"] = safe_score(experience.get("score", 0))
+    experience["points"] = clean_list(experience.get("points", []))
     data["experience"] = experience
 
-
-    # ========================================================
-    # PROJECTS
-    # ========================================================
-
-    projects = data.get(
-        "projects",
-        {}
-    )
-
+    projects = data.get("projects", {})
     if not isinstance(projects, dict):
         projects = {}
-
-    projects["score"] = safe_score(
-        projects.get("score", 0)
-    )
-
-    projects["points"] = clean_list(
-        projects.get("points", [])
-    )
-
+    projects["score"] = safe_score(projects.get("score", 0))
+    projects["points"] = clean_list(projects.get("points", []))
     data["projects"] = projects
 
-
-    # ========================================================
-    # EDUCATION
-    # ========================================================
-
-    education = data.get(
-        "education",
-        {}
-    )
-
+    education = data.get("education", {})
     if not isinstance(education, dict):
         education = {}
-
-    education["score"] = safe_score(
-        education.get("score", 0)
-    )
-
-    education["points"] = clean_list(
-        education.get("points", [])
-    )
-
+    education["score"] = safe_score(education.get("score", 0))
+    education["points"] = clean_list(education.get("points", []))
     data["education"] = education
 
-
-    # ========================================================
-    # ATS
-    # ========================================================
-
-    ats = data.get(
-        "ats",
-        {}
-    )
-
+    ats = data.get("ats", {})
     if not isinstance(ats, dict):
         ats = {}
-
-    ats["score"] = safe_score(
-        ats.get("score", 0)
-    )
-
-    ats["keywords"] = clean_list(
-        ats.get("keywords", [])
-    )
-
-    ats["formatting"] = clean_list(
-        ats.get("formatting", [])
-    )
-
-    ats["issues"] = clean_list(
-        ats.get("issues", [])
-    )
-
+    ats["score"] = safe_score(ats.get("score", 0))
+    ats["keywords"] = clean_list(ats.get("keywords", []))
+    ats["formatting"] = clean_list(ats.get("formatting", []))
+    ats["issues"] = clean_list(ats.get("issues", []))
     data["ats"] = ats
 
-
-    # ========================================================
-    # JOB MATCH
-    # ========================================================
-
-    job_match = data.get(
-        "jobMatch",
-        {}
-    )
-
+    job_match = data.get("jobMatch", {})
     if not isinstance(job_match, dict):
         job_match = {}
-
-    job_match["score"] = safe_score(
-        job_match.get("score", 0)
-    )
-
-    job_match["matchedKeywords"] = clean_list(
-        job_match.get(
-            "matchedKeywords",
-            []
-        )
-    )
-
-    job_match["missingKeywords"] = clean_list(
-        job_match.get(
-            "missingKeywords",
-            []
-        )
-    )
-
-    job_match["recommendations"] = clean_list(
-        job_match.get(
-            "recommendations",
-            []
-        )
-    )
-
-    job_match["summary"] = clean_text(
-        job_match.get(
-            "summary",
-            ""
-        )
-    )
-
+    job_match["score"] = safe_score(job_match.get("score", 0))
+    job_match["matchedKeywords"] = clean_list(job_match.get("matchedKeywords", []))
+    job_match["missingKeywords"] = clean_list(job_match.get("missingKeywords", []))
+    job_match["recommendations"] = clean_list(job_match.get("recommendations", []))
+    job_match["summary"] = clean_text(job_match.get("summary", ""))
     data["jobMatch"] = job_match
-
 
     return data
 
@@ -409,367 +221,89 @@ def normalize_analysis(data: dict):
 # ============================================================
 
 def format_analysis(data: dict):
-
     lines = []
-
-
-    # ========================================================
-    # 1. OVERALL
-    # ========================================================
-
+    
     lines.append("1. OVERALL SCORE")
+    lines.append(f"{data.get('overallScore', 0)}/100\n")
 
-    lines.append(
-        f"{data.get('overallScore', 0)}/100"
-    )
+    lines.append("2. RESUME SUMMARY")
+    lines.append(data.get("summary", "") + "\n")
 
+    lines.append("3. KEY STRENGTHS")
+    for item in data.get("strengths", []): lines.append(f"- {item}")
     lines.append("")
 
-
-    # ========================================================
-    # 2. SUMMARY
-    # ========================================================
-
-    lines.append(
-        "2. RESUME SUMMARY"
-    )
-
-    lines.append(
-        data.get(
-            "summary",
-            ""
-        )
-    )
-
+    lines.append("4. WEAKNESSES")
+    for item in data.get("weaknesses", []): lines.append(f"- {item}")
     lines.append("")
 
-
-    # ========================================================
-    # 3. STRENGTHS
-    # ========================================================
-
-    lines.append(
-        "3. KEY STRENGTHS"
-    )
-
-    for item in data.get(
-        "strengths",
-        []
-    ):
-
-        lines.append(
-            f"- {item}"
-        )
-
-    lines.append("")
-
-
-    # ========================================================
-    # 4. WEAKNESSES
-    # ========================================================
-
-    lines.append(
-        "4. WEAKNESSES"
-    )
-
-    for item in data.get(
-        "weaknesses",
-        []
-    ):
-
-        lines.append(
-            f"- {item}"
-        )
-
-    lines.append("")
-
-
-    # ========================================================
-    # 5. SKILLS
-    # ========================================================
-
-    skills = data.get(
-        "skills",
-        {}
-    )
-
-    lines.append(
-        "5. SKILLS ANALYSIS"
-    )
-
-    lines.append(
-        f"Skills Score: {skills.get('score', 0)}/100"
-    )
-
+    skills = data.get("skills", {})
+    lines.append("5. SKILLS ANALYSIS")
+    lines.append(f"Skills Score: {skills.get('score', 0)}/100")
     if skills.get("technical"):
-
-        lines.append(
-            "Technical Skills:"
-        )
-
-        for item in skills["technical"]:
-            lines.append(
-                f"- {item}"
-            )
-
+        lines.append("Technical Skills:")
+        for item in skills["technical"]: lines.append(f"- {item}")
     if skills.get("soft"):
-
-        lines.append(
-            "Soft Skills:"
-        )
-
-        for item in skills["soft"]:
-            lines.append(
-                f"- {item}"
-            )
-
+        lines.append("Soft Skills:")
+        for item in skills["soft"]: lines.append(f"- {item}")
     if skills.get("missing"):
-
-        lines.append(
-            "Missing / Recommended Skills:"
-        )
-
-        for item in skills["missing"]:
-            lines.append(
-                f"- {item}"
-            )
-
+        lines.append("Missing / Recommended Skills:")
+        for item in skills["missing"]: lines.append(f"- {item}")
     lines.append("")
 
-
-    # ========================================================
-    # 6. EXPERIENCE
-    # ========================================================
-
-    experience = data.get(
-        "experience",
-        {}
-    )
-
-    lines.append(
-        "6. EXPERIENCE ANALYSIS"
-    )
-
-    lines.append(
-        f"Experience Score: {experience.get('score', 0)}/100"
-    )
-
-    for item in experience.get(
-        "points",
-        []
-    ):
-
-        lines.append(
-            f"- {item}"
-        )
-
+    experience = data.get("experience", {})
+    lines.append("6. EXPERIENCE ANALYSIS")
+    lines.append(f"Experience Score: {experience.get('score', 0)}/100")
+    for item in experience.get("points", []): lines.append(f"- {item}")
     lines.append("")
 
-
-    # ========================================================
-    # 7. PROJECTS
-    # ========================================================
-
-    projects = data.get(
-        "projects",
-        {}
-    )
-
-    lines.append(
-        "7. PROJECT ANALYSIS"
-    )
-
-    lines.append(
-        f"Projects Score: {projects.get('score', 0)}/100"
-    )
-
-    for item in projects.get(
-        "points",
-        []
-    ):
-
-        lines.append(
-            f"- {item}"
-        )
-
+    projects = data.get("projects", {})
+    lines.append("7. PROJECT ANALYSIS")
+    lines.append(f"Projects Score: {projects.get('score', 0)}/100")
+    for item in projects.get("points", []): lines.append(f"- {item}")
     lines.append("")
 
-
-    # ========================================================
-    # 8. EDUCATION
-    # ========================================================
-
-    education = data.get(
-        "education",
-        {}
-    )
-
-    lines.append(
-        "8. EDUCATION ANALYSIS"
-    )
-
-    lines.append(
-        f"Education Score: {education.get('score', 0)}/100"
-    )
-
-    for item in education.get(
-        "points",
-        []
-    ):
-
-        lines.append(
-            f"- {item}"
-        )
-
+    education = data.get("education", {})
+    lines.append("8. EDUCATION ANALYSIS")
+    lines.append(f"Education Score: {education.get('score', 0)}/100")
+    for item in education.get("points", []): lines.append(f"- {item}")
     lines.append("")
 
-
-    # ========================================================
-    # 9. ATS
-    # ========================================================
-
-    ats = data.get(
-        "ats",
-        {}
-    )
-
-    lines.append(
-        "9. ATS ANALYSIS"
-    )
-
-    lines.append(
-        f"ATS Score: {ats.get('score', 0)}/100"
-    )
-
+    ats = data.get("ats", {})
+    lines.append("9. ATS ANALYSIS")
+    lines.append(f"ATS Score: {ats.get('score', 0)}/100")
     if ats.get("keywords"):
-
-        lines.append(
-            "Keywords:"
-        )
-
-        for item in ats["keywords"]:
-            lines.append(
-                f"- {item}"
-            )
-
+        lines.append("Keywords:")
+        for item in ats["keywords"]: lines.append(f"- {item}")
     if ats.get("formatting"):
-
-        lines.append(
-            "Formatting:"
-        )
-
-        for item in ats["formatting"]:
-            lines.append(
-                f"- {item}"
-            )
-
+        lines.append("Formatting:")
+        for item in ats["formatting"]: lines.append(f"- {item}")
     if ats.get("issues"):
-
-        lines.append(
-            "ATS Issues:"
-        )
-
-        for item in ats["issues"]:
-            lines.append(
-                f"- {item}"
-            )
-
+        lines.append("ATS Issues:")
+        for item in ats["issues"]: lines.append(f"- {item}")
     lines.append("")
 
-
-    # ========================================================
-    # 10. JOB MATCH
-    # ========================================================
-
-    job_match = data.get(
-        "jobMatch",
-        {}
-    )
-
-    lines.append(
-        "10. JOB MATCH ANALYSIS"
-    )
-
-    lines.append(
-        f"Job Match Score: {job_match.get('score', 0)}/100"
-    )
-
-    if job_match.get("summary"):
-
-        lines.append(
-            job_match["summary"]
-        )
-
+    job_match = data.get("jobMatch", {})
+    lines.append("10. JOB MATCH ANALYSIS")
+    lines.append(f"Job Match Score: {job_match.get('score', 0)}/100")
+    if job_match.get("summary"): lines.append(job_match["summary"])
     if job_match.get("matchedKeywords"):
-
-        lines.append(
-            "Matched Keywords:"
-        )
-
-        for item in job_match["matchedKeywords"]:
-            lines.append(
-                f"- {item}"
-            )
-
+        lines.append("Matched Keywords:")
+        for item in job_match["matchedKeywords"]: lines.append(f"- {item}")
     if job_match.get("missingKeywords"):
-
-        lines.append(
-            "Missing Keywords:"
-        )
-
-        for item in job_match["missingKeywords"]:
-            lines.append(
-                f"- {item}"
-            )
-
+        lines.append("Missing Keywords:")
+        for item in job_match["missingKeywords"]: lines.append(f"- {item}")
     if job_match.get("recommendations"):
-
-        lines.append(
-            "Job Match Recommendations:"
-        )
-
-        for item in job_match["recommendations"]:
-            lines.append(
-                f"- {item}"
-            )
-
+        lines.append("Job Match Recommendations:")
+        for item in job_match["recommendations"]: lines.append(f"- {item}")
     lines.append("")
 
-
-    # ========================================================
-    # 11. RECOMMENDATIONS
-    # ========================================================
-
-    lines.append(
-        "11. ACTIONABLE RECOMMENDATIONS"
-    )
-
-    for item in data.get(
-        "recommendations",
-        []
-    ):
-
-        lines.append(
-            f"- {item}"
-        )
-
+    lines.append("11. ACTIONABLE RECOMMENDATIONS")
+    for item in data.get("recommendations", []): lines.append(f"- {item}")
     lines.append("")
 
-
-    # ========================================================
-    # 12. VERDICT
-    # ========================================================
-
-    lines.append(
-        "12. FINAL VERDICT"
-    )
-
-    lines.append(
-        data.get(
-            "verdict",
-            ""
-        )
-    )
+    lines.append("12. FINAL VERDICT")
+    lines.append(data.get("verdict", ""))
 
     return "\n".join(lines)
 
@@ -778,80 +312,40 @@ def format_analysis(data: dict):
 # GEMINI AI REVIEW
 # ============================================================
 
-def generate_ai_review(
-    resume_text: str,
-    job_description: str = ""
-):
-
+def generate_ai_review(resume_text: str, job_description: str = ""):
     if not API_KEY:
-
         raise HTTPException(
             status_code=500,
-            detail=(
-                "GEMINI_API_KEY is not configured on the server."
-            )
+            detail="GEMINI_API_KEY is not configured on the server."
         )
 
-
     try:
-
         print("\n======================================")
         print("STARTING GEMINI REQUEST")
         print("======================================")
+        print(f"Model: {GEMINI_MODEL}")
+        print(f"Resume characters: {len(resume_text)}")
+        print(f"Job description provided: {bool(job_description.strip())}")
 
-        print(
-            f"Model: {GEMINI_MODEL}"
-        )
-
-        print(
-            f"Resume characters: {len(resume_text)}"
-        )
-
-        print(
-            f"Job description provided: {bool(job_description.strip())}"
-        )
-
-
-        # ====================================================
-        # GEMINI CLIENT
-        # ====================================================
-
-        client = genai.Client(
-            api_key=API_KEY
-        )
-
-
-        # ====================================================
-        # JOB MATCH INSTRUCTIONS
-        # ====================================================
+        client = genai.Client(api_key=API_KEY)
 
         if job_description.strip():
-
             job_section = f"""
 TARGET JOB DESCRIPTION:
-
 ==================================================
-
 {job_description}
-
 ==================================================
-
 Compare the resume against this job description.
-
 Calculate a realistic job match score.
-
 Identify:
 - matched keywords
 - missing keywords
 - relevant skill gaps
 - specific improvements for this target role
 """
-
         else:
-
             job_section = """
 No target job description was provided.
-
 For jobMatch:
 - score should be 0
 - matchedKeywords should be []
@@ -860,21 +354,12 @@ For jobMatch:
 - summary should say that no target job description was provided
 """
 
-
-        # ====================================================
-        # PROMPT
-        # ====================================================
-
         prompt = f"""
-You are an expert professional resume reviewer,
-career advisor and ATS specialist.
-
+You are an expert professional resume reviewer, career advisor and ATS specialist.
 Analyze the uploaded resume carefully and objectively.
-
 Your response MUST be valid JSON only.
 
 IMPORTANT RULES:
-
 - Return ONLY JSON.
 - Do NOT use Markdown.
 - Do NOT use code fences.
@@ -889,53 +374,35 @@ IMPORTANT RULES:
 - Use simple professional English.
 
 Return EXACTLY this structure:
-
 {{
     "overallScore": 0,
-
     "summary": "",
-
-    "strengths": [
-        "",
-        "",
-        ""
-    ],
-
-    "weaknesses": [
-        "",
-        "",
-        ""
-    ],
-
+    "strengths": ["", "", ""],
+    "weaknesses": ["", "", ""],
     "skills": {{
         "score": 0,
         "technical": [],
         "soft": [],
         "missing": []
     }},
-
     "experience": {{
         "score": 0,
         "points": []
     }},
-
     "projects": {{
         "score": 0,
         "points": []
     }},
-
     "education": {{
         "score": 0,
         "points": []
     }},
-
     "ats": {{
         "score": 0,
         "keywords": [],
         "formatting": [],
         "issues": []
     }},
-
     "jobMatch": {{
         "score": 0,
         "matchedKeywords": [],
@@ -943,553 +410,181 @@ Return EXACTLY this structure:
         "recommendations": [],
         "summary": ""
     }},
-
-    "recommendations": [
-        "",
-        "",
-        ""
-    ],
-
+    "recommendations": ["", "", ""],
     "verdict": ""
 }}
 
-SCORING:
-
-- overallScore: 0 to 100
-- skills.score: 0 to 100
-- experience.score: 0 to 100
-- projects.score: 0 to 100
-- education.score: 0 to 100
-- ats.score: 0 to 100
-- jobMatch.score: 0 to 100
-
-ANALYSIS RULES:
-
-1. Evaluate the resume based only on the uploaded content.
-
-2. Never invent:
-   - internships
-   - jobs
-   - projects
-   - certifications
-   - skills
-   - achievements
-   - technologies
-   - experience
-
-3. If the candidate is a student and has no professional experience,
-   do not treat being a student itself as a major weakness.
-
-4. For projects evaluate:
-   - clarity
-   - technologies
-   - problem solved
-   - candidate contribution
-   - measurable results
-
-5. For skills evaluate:
-   - technical skills
-   - soft skills
-   - relevant missing skills
-
-6. For ATS evaluate:
-   - relevant keywords
-   - formatting
-   - section headings
-   - readability
-   - ATS compatibility
-   - potential parsing issues
-
-7. For recommendations:
-   give specific actions that the candidate can actually take.
-
-8. Avoid generic advice whenever possible.
-
-9. Keep final verdict short.
-
-10. Never put "1.", "2.", "3." etc. inside arrays.
-
-11. Never put "-" or "•" at the beginning of array values.
-
-12. Keep array values as plain text.
-
-13. Scores must be integers between 0 and 100.
+SCORING: 0 to 100 for all scores.
 
 {job_section}
 
 RESUME:
-
 ==================================================
-
 {resume_text}
-
 ==================================================
 """
 
-
-        # ====================================================
-        # GEMINI REQUEST
-        # ====================================================
-
         response = client.models.generate_content(
-
             model=GEMINI_MODEL,
-
             contents=prompt,
-
             config=types.GenerateContentConfig(
-
-                thinking_config=types.ThinkingConfig(
-                    thinking_level="minimal"
-                ),
-
+                thinking_config=types.ThinkingConfig(thinking_level="minimal"),
                 max_output_tokens=4000,
-
                 response_mime_type="application/json"
             )
         )
 
-
-        # ====================================================
-        # RESPONSE VALIDATION
-        # ====================================================
-
-        if not response:
-
-            raise RuntimeError(
-                "Gemini returned no response."
-            )
-
-
-        if not response.text:
-
-            raise RuntimeError(
-                "Gemini returned an empty response."
-            )
-
+        if not response or not response.text:
+            raise RuntimeError("Gemini returned no response.")
 
         raw_text = response.text.strip()
-
-
-        # ====================================================
-        # REMOVE CODE FENCES IF ANY
-        # ====================================================
-
-        raw_text = re.sub(
-            r"^```json\s*",
-            "",
-            raw_text,
-            flags=re.IGNORECASE
-        )
-
-        raw_text = re.sub(
-            r"^```\s*",
-            "",
-            raw_text
-        )
-
-        raw_text = re.sub(
-            r"\s*```$",
-            "",
-            raw_text
-        )
-
-        raw_text = raw_text.strip()
-
-
-        # ====================================================
-        # JSON PARSE
-        # ====================================================
+        raw_text = re.sub(r"^```json\s*", "", raw_text, flags=re.IGNORECASE)
+        raw_text = re.sub(r"^```\s*", "", raw_text)
+        raw_text = re.sub(r"\s*```$", "", raw_text).strip()
 
         try:
-
-            data = json.loads(
-                raw_text
-            )
-
+            data = json.loads(raw_text)
         except json.JSONDecodeError as e:
-
-            print("\n======================================")
-            print("INVALID JSON FROM GEMINI")
-            print("======================================")
-
+            print("\nINVALID JSON FROM GEMINI")
             print(raw_text)
+            raise RuntimeError(f"Gemini returned invalid JSON: {str(e)}")
 
-            raise RuntimeError(
-                f"Gemini returned invalid JSON: {str(e)}"
-            )
+        if not isinstance(data, dict):
+            raise RuntimeError("Gemini returned an invalid JSON object.")
 
+        data = normalize_analysis(data)
 
-        # ====================================================
-        # OBJECT VALIDATION
-        # ====================================================
-
-        if not isinstance(
-            data,
-            dict
-        ):
-
-            raise RuntimeError(
-                "Gemini returned an invalid JSON object."
-            )
-
-
-        # ====================================================
-        # NORMALIZE
-        # ====================================================
-
-        data = normalize_analysis(
-            data
-        )
-
-
-        print("\n======================================")
-        print("GEMINI SUCCESS")
-        print("======================================")
-
-        print(
-            f"Overall Score: {data['overallScore']}"
-        )
-
-        print(
-            f"ATS Score: {data['ats']['score']}"
-        )
-
-        print(
-            f"Job Match Score: {data['jobMatch']['score']}"
-        )
-
-
+        print("\nGEMINI SUCCESS")
+        print(f"Overall Score: {data['overallScore']}")
         return data
 
-
     except HTTPException:
-
         raise
-
-
     except Exception as e:
-
-        print("\n======================================")
-        print("GEMINI ERROR")
-        print("======================================")
-
-        print(
-            str(e)
-        )
-
-        print(
-            traceback.format_exc()
-        )
-
-
+        print("\nGEMINI ERROR\n", traceback.format_exc())
         error_text = str(e).lower()
 
-
-        # ====================================================
-        # 503
-        # ====================================================
-
-        if (
-            "503" in error_text
-            or "unavailable" in error_text
-            or "high demand" in error_text
-            or "overloaded" in error_text
-        ):
-
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "Gemini is temporarily busy. "
-                    "Please try again in a few seconds."
-                )
-            )
-
-
-        # ====================================================
-        # 429
-        # ====================================================
-
-        if (
-            "429" in error_text
-            or "resource exhausted" in error_text
-            or "rate limit" in error_text
-            or "quota" in error_text
-        ):
-
-            raise HTTPException(
-                status_code=429,
-                detail=(
-                    "Gemini API rate limit or quota reached. "
-                    "Please try again later."
-                )
-            )
-
-
-        # ====================================================
-        # OTHER ERRORS
-        # ====================================================
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"Gemini API error: {str(e)}"
-        )
+        if any(err in error_text for err in ["503", "unavailable", "high demand", "overloaded"]):
+            raise HTTPException(status_code=503, detail="Gemini is temporarily busy. Please try again in a few seconds.")
+        if any(err in error_text for err in ["429", "resource exhausted", "rate limit", "quota"]):
+            raise HTTPException(status_code=429, detail="Gemini API rate limit or quota reached. Please try again later.")
+        
+        raise HTTPException(status_code=500, detail=f"Gemini API error: {str(e)}")
 
 
 # ============================================================
-# RESUME REVIEW API
+# RESUME REVIEW API (POST)
 # ============================================================
 
 @app.post("/api/review-resume")
 def review_resume(
-
     file: UploadFile = File(...),
-
-    job_description: str = Form("")
+    job_description: str = Form(""),
+    user_id: str = Form("")  
 ):
-
-
-    # ========================================================
-    # API KEY CHECK
-    # ========================================================
-
     if not API_KEY:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is missing on the server.")
 
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "GEMINI_API_KEY is missing on the server."
-            )
-        )
-
-
-    # ========================================================
-    # FILE CHECK
-    # ========================================================
-
-    if not file.filename:
-
-        raise HTTPException(
-            status_code=400,
-            detail="No file was selected."
-        )
-
-
-    if not file.filename.lower().endswith(".pdf"):
-
-        raise HTTPException(
-            status_code=400,
-            detail="Only PDF files are allowed."
-        )
-
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
 
     temp_path = None
 
-
     try:
-
-        # ====================================================
-        # READ FILE
-        # ====================================================
-
         print("\nReceiving resume...")
-
         file_content = file.file.read()
 
-
-        # ====================================================
-        # 10 MB LIMIT
-        # ====================================================
-
         if len(file_content) > 10 * 1024 * 1024:
-
-            raise HTTPException(
-                status_code=400,
-                detail="PDF must be smaller than 10 MB."
-            )
-
-
+            raise HTTPException(status_code=400, detail="PDF must be smaller than 10 MB.")
         if len(file_content) == 0:
+            raise HTTPException(status_code=400, detail="Uploaded PDF is empty.")
 
-            raise HTTPException(
-                status_code=400,
-                detail="Uploaded PDF is empty."
-            )
-
-
-        # ====================================================
-        # SAVE TEMP PDF
-        # ====================================================
-
-        with tempfile.NamedTemporaryFile(
-            delete=False,
-            suffix=".pdf"
-        ) as temp_file:
-
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
             temp_path = temp_file.name
+            temp_file.write(file_content)
 
-            temp_file.write(
-                file_content
-            )
-
-
-        print(
-            "Resume saved."
-        )
-
-
-        # ====================================================
-        # EXTRACT TEXT
-        # ====================================================
-
-        print(
-            "\nExtracting resume text..."
-        )
-
-        resume_text = extract_text_from_pdf(
-            temp_path
-        )
-
+        print("Resume saved.\nExtracting resume text...")
+        resume_text = extract_text_from_pdf(temp_path)
 
         if not resume_text:
-
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Could not extract text from this PDF. "
-                    "Please upload a text-based PDF resume."
-                )
-            )
-
-
-        print(
-            f"Extracted {len(resume_text)} characters."
-        )
-
-
-        # ====================================================
-        # LIMIT RESUME SIZE
-        # ====================================================
+            raise HTTPException(status_code=400, detail="Could not extract text. Please upload a text-based PDF.")
 
         resume_text = resume_text[:25000]
+        job_description = (job_description or "").strip()[:5000]
 
+        print("\nSending resume to Gemini...")
+        structured_analysis = generate_ai_review(resume_text, job_description)
+        analysis_text = format_analysis(structured_analysis)
 
-        # ====================================================
-        # LIMIT JOB DESCRIPTION
-        # ====================================================
+        # SAVE TO MONGODB
+        if resume_reports_collection is not None and user_id.strip():
+            try:
+                print("\nSaving report to MongoDB...")
+                db_document = {
+                    "user_id": user_id.strip(),
+                    "file_name": file.filename,
+                    "job_description": job_description,
+                    "overall_score": structured_analysis.get("overallScore", 0),
+                    "structured_data": structured_analysis,
+                    "created_at": datetime.now(timezone.utc)
+                }
+                resume_reports_collection.insert_one(db_document)
+                print("Successfully saved to MongoDB database.")
+            except Exception as db_err:
+                print(f"\nMongoDB Save Error: {str(db_err)}")
 
-        job_description = (
-            job_description or ""
-        ).strip()[:5000]
-
-
-        # ====================================================
-        # GEMINI ANALYSIS
-        # ====================================================
-
-        print(
-            "\nSending resume to Gemini..."
-        )
-
-
-        structured_analysis = generate_ai_review(
-
-            resume_text,
-
-            job_description
-        )
-
-
-        # ====================================================
-        # OLD TEXT FORMAT
-        # ====================================================
-
-        analysis_text = format_analysis(
-            structured_analysis
-        )
-
-
-        # ====================================================
-        # RETURN RESPONSE
-        # ====================================================
-
-        print(
-            "\nResume analysis completed successfully."
-        )
-
+        print("\nResume analysis completed successfully.")
 
         return {
-
             "success": True,
-
             "analysis": analysis_text,
-
             "structured": structured_analysis,
-
             "meta": {
-
                 "filename": file.filename,
-
-                "jobDescriptionProvided": bool(
-                    job_description
-                ),
-
-                "model": GEMINI_MODEL
+                "jobDescriptionProvided": bool(job_description),
+                "model": GEMINI_MODEL,
+                "saved_to_db": bool(resume_reports_collection is not None and user_id.strip())
             }
         }
 
-
     except HTTPException:
-
         raise
-
-
     except Exception as e:
-
-        print(
-            "\n======================================"
-        )
-
-        print(
-            "RESUME REVIEW ERROR"
-        )
-
-        print(
-            "======================================"
-        )
-
-        print(
-            traceback.format_exc()
-        )
-
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
-
+        print("\nRESUME REVIEW ERROR\n", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
-
-        # ====================================================
-        # DELETE TEMP FILE
-        # ====================================================
-
-        if temp_path:
-
+        if temp_path and os.path.exists(temp_path):
             try:
-
-                if os.path.exists(
-                    temp_path
-                ):
-
-                    os.remove(
-                        temp_path
-                    )
-
+                os.remove(temp_path)
             except Exception as e:
+                print("Could not delete temporary file:", str(e))
 
-                print(
-                    "Could not delete temporary file:",
-                    str(e)
-                )
+# ============================================================
+# GET USER REPORTS API (NEW)
+# ============================================================
+
+@app.get("/api/user-reports")
+def get_user_reports(user_id: str):
+    if resume_reports_collection is None:
+        raise HTTPException(status_code=500, detail="Database not connected.")
+    
+    if not user_id or not user_id.strip():
+        raise HTTPException(status_code=400, detail="User ID is required.")
+        
+    try:
+        # Fetch reports, sort by created_at descending (newest first)
+        cursor = resume_reports_collection.find({"user_id": user_id.strip()}).sort("created_at", -1)
+        
+        reports = []
+        for doc in cursor:
+            # MongoDB '_id' ko string mein convert karna zaroori hai JSON ke liye
+            doc["_id"] = str(doc["_id"])
+            reports.append(doc)
+            
+        return {
+            "success": True,
+            "reports": reports
+        }
+    except Exception as e:
+        print("\nFETCH REPORTS ERROR\n", traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Failed to fetch reports from database.")

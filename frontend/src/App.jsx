@@ -1,10 +1,15 @@
-import React, { useMemo, useState } from "react";
+import React, { useState, useEffect } from "react";
 import axios from "axios";
+import { SignedIn, SignedOut, SignInButton, SignUpButton, UserButton, useUser } from "@clerk/clerk-react";
 
 const BACKEND_URL =
   "https://ai-resume-reviewer-e412.onrender.com/api/review-resume";
+const GET_REPORTS_URL = 
+  "https://ai-resume-reviewer-e412.onrender.com/api/user-reports";
 
 export default function App() {
+  const { user } = useUser(); // NEW: Clerk se current user laane ke liye
+  
   const [file, setFile] = useState(null);
   const [fileName, setFileName] = useState("");
   const [jobDescription, setJobDescription] = useState("");
@@ -18,6 +23,45 @@ export default function App() {
 
   const [error, setError] = useState("");
   const [dragActive, setDragActive] = useState(false);
+
+  // =========================================================
+  // DASHBOARD STATES & FETCH LOGIC (NEW)
+  // =========================================================
+  const [showDashboard, setShowDashboard] = useState(false);
+  const [reportsList, setReportsList] = useState([]);
+  const [loadingReports, setLoadingReports] = useState(false);
+
+  const fetchUserReports = async () => {
+    if (!user || !user.id) return;
+    
+    setLoadingReports(true);
+    try {
+      const response = await axios.get(`${GET_REPORTS_URL}?user_id=${user.id}`);
+      if (response.data?.success) {
+        setReportsList(response.data.reports);
+      }
+    } catch (err) {
+      console.error("Error fetching reports:", err);
+    } finally {
+      setLoadingReports(false);
+    }
+  };
+
+  // Jab dashboard open ho tab API call karo
+  useEffect(() => {
+    if (showDashboard && user) {
+      fetchUserReports();
+    }
+  }, [showDashboard, user]);
+
+  const loadPastReport = (report) => {
+    setFileName(report.file_name);
+    setJobDescription(report.job_description || "");
+    setStructured(report.structured_data);
+    setResult(""); 
+    setShowDashboard(false);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   // =========================================================
   // FILE SELECTION
@@ -84,10 +128,12 @@ export default function App() {
     const formData = new FormData();
 
     formData.append("file", file);
-
-    // Current backend doesn't process this yet,
-    // but keeping it here for the next backend upgrade.
     formData.append("job_description", jobDescription);
+    
+    // NEW: Agar user logged in hai, toh user_id backend ko bhejo
+    if (user && user.id) {
+      formData.append("user_id", user.id);
+    }
 
     setLoading(true);
     setError("");
@@ -156,77 +202,7 @@ export default function App() {
   const experienceScore = safeScore(structured?.experience?.score);
   const projectsScore = safeScore(structured?.projects?.score);
   const educationScore = safeScore(structured?.education?.score);
-
-  // =========================================================
-  // JOB KEYWORDS
-  // =========================================================
-
-  const keywords = useMemo(() => {
-    if (!jobDescription.trim()) return [];
-
-    const commonWords = new Set([
-      "and",
-      "the",
-      "for",
-      "with",
-      "from",
-      "this",
-      "that",
-      "are",
-      "you",
-      "your",
-      "have",
-      "has",
-      "will",
-      "our",
-      "their",
-      "into",
-      "about",
-      "using",
-      "work",
-      "working",
-      "experience",
-      "years",
-      "role",
-      "job",
-      "candidate",
-      "skills",
-      "required",
-      "preferred",
-      "should",
-      "must",
-      "can",
-      "who",
-      "all",
-      "any",
-      "not",
-      "but",
-      "was",
-      "were",
-      "been",
-      "being",
-      "they",
-      "them",
-      "its",
-      "also",
-      "more",
-      "than",
-      "such",
-      "other",
-    ]);
-
-    const words = jobDescription
-      .toLowerCase()
-      .replace(/[^a-z0-9+#.\- ]/g, " ")
-      .split(/\s+/)
-      .filter(
-        (word) =>
-          word.length >= 3 &&
-          !commonWords.has(word)
-      );
-
-    return [...new Set(words)].slice(0, 12);
-  }, [jobDescription]);
+  const jobMatchScore = safeScore(structured?.jobMatch?.score);
 
   // =========================================================
   // SCORE MESSAGE
@@ -295,6 +271,9 @@ ${jobDescription || "Not provided"}
 OVERALL SCORE:
 ${overallScore ?? "N/A"}/100
 
+JOB MATCH SCORE:
+${jobMatchScore ?? "N/A"}/100
+
 SUMMARY:
 ${structured?.summary || "N/A"}
 
@@ -305,6 +284,24 @@ ${(structured?.strengths || [])
 
 WEAKNESSES:
 ${(structured?.weaknesses || [])
+  .map((item) => `- ${item}`)
+  .join("\n")}
+
+JOB MATCH ANALYSIS:
+${structured?.jobMatch?.summary || "N/A"}
+
+Matched Keywords:
+${(structured?.jobMatch?.matchedKeywords || [])
+  .map((item) => `- ${item}`)
+  .join("\n")}
+
+Missing Keywords:
+${(structured?.jobMatch?.missingKeywords || [])
+  .map((item) => `- ${item}`)
+  .join("\n")}
+
+Job Specific Recommendations:
+${(structured?.jobMatch?.recommendations || [])
   .map((item) => `- ${item}`)
   .join("\n")}
 
@@ -365,7 +362,7 @@ ${(structured?.ats?.issues || [])
   .map((item) => `- ${item}`)
   .join("\n")}
 
-RECOMMENDATIONS:
+GENERAL RECOMMENDATIONS:
 ${(structured?.recommendations || [])
   .map((item) => `- ${item}`)
   .join("\n")}
@@ -499,9 +496,9 @@ Generated by AI Resume Intelligence
   }) => {
     return (
       <div
-        className={`bg-slate-900/70 border border-slate-700/70 rounded-2xl p-5 md:p-6
-        hover:border-indigo-500/50 hover:bg-slate-900/90
-        transition-all duration-300
+        className={`bg-slate-900/70 border border-slate-700/70 rounded-2xl p-5 md:p-6 
+        hover:border-indigo-500/50 hover:bg-slate-900/90 
+        transition-all duration-300 
         ${wide ? "md:col-span-2" : ""}`}
       >
         <div className="flex items-start gap-4">
@@ -552,7 +549,10 @@ Generated by AI Resume Intelligence
             </div>
 
             <div>
-              <h1 className="font-bold text-white tracking-tight">
+              <h1 
+                className="font-bold text-white tracking-tight cursor-pointer"
+                onClick={() => setShowDashboard(false)}
+              >
                 AI Resume Intelligence
               </h1>
 
@@ -563,12 +563,40 @@ Generated by AI Resume Intelligence
 
           </div>
 
-          <div className="hidden sm:flex items-center gap-2 text-xs">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+          <div className="flex items-center gap-4">
+            <div className="hidden sm:flex items-center gap-2 text-xs">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="text-slate-400">
+                AI Engine Online
+              </span>
+            </div>
 
-            <span className="text-slate-400">
-              AI Engine Online
-            </span>
+            {/* CLERK AUTHENTICATION BUTTONS */}
+            <div className="ml-2 pl-4 border-l border-slate-700/50 flex items-center h-full gap-4">
+              <SignedOut>
+                <SignInButton mode="modal">
+                  <button className="text-slate-300 hover:text-white text-sm font-semibold transition-colors">
+                    Sign In
+                  </button>
+                </SignInButton>
+                
+                <SignUpButton mode="modal">
+                  <button className="px-4 py-1.5 rounded-lg bg-indigo-600 border border-indigo-500 text-white text-sm font-semibold hover:bg-indigo-500 transition-all duration-300 shadow-lg shadow-indigo-500/20">
+                    Sign Up
+                  </button>
+                </SignUpButton>
+              </SignedOut>
+              <SignedIn>
+                {/* NEW: MY REPORTS BUTTON */}
+                <button 
+                  onClick={() => setShowDashboard(!showDashboard)}
+                  className="px-3 py-1.5 rounded-lg border border-slate-700 hover:border-indigo-500/50 text-slate-300 hover:text-white text-sm font-semibold transition-all duration-300"
+                >
+                  {showDashboard ? "Back to Analysis" : "My Reports"}
+                </button>
+                <UserButton appearance={{ elements: { avatarBox: "w-9 h-9" } }} />
+              </SignedIn>
+            </div>
           </div>
 
         </div>
@@ -578,123 +606,201 @@ Generated by AI Resume Intelligence
 
       <main className="relative max-w-6xl mx-auto px-5 md:px-8 py-10 md:py-16">
 
-        {/* HERO */}
-
-        <section className="text-center max-w-3xl mx-auto mb-10">
-
-          <div className="inline-flex items-center gap-2 px-4 py-2 mb-5 rounded-full border border-indigo-500/20 bg-indigo-500/5 text-indigo-300 text-xs font-medium">
-            ✨ AI-Powered Career Intelligence
-          </div>
-
-          <h2 className="text-4xl md:text-6xl font-black tracking-tight leading-tight text-white">
-            Turn Your Resume Into
-
-            <span className="block bg-gradient-to-r from-indigo-400 via-blue-400 to-cyan-400 bg-clip-text text-transparent">
-              Your Career Advantage.
-            </span>
-          </h2>
-
-          <p className="mt-5 text-slate-400 text-sm md:text-base leading-7 max-w-2xl mx-auto">
-            Analyze your resume, discover missing skills
-            and get actionable career insights.
-          </p>
-
-        </section>
-
-        {/* UPLOAD */}
-
-        <section className="max-w-3xl mx-auto">
-
-          <form
-            onSubmit={handleSubmit}
-            className="bg-slate-900/70 border border-slate-800 rounded-3xl p-5 md:p-7 shadow-2xl shadow-black/20 backdrop-blur-xl"
-          >
-
-            {/* RESUME */}
-
-            <div
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              className={`relative rounded-2xl border-2 border-dashed p-8 md:p-12 text-center transition-all duration-300 ${
-                dragActive
-                  ? "border-indigo-400 bg-indigo-500/10 scale-[1.01]"
-                  : "border-slate-700 bg-slate-950/50 hover:border-indigo-500/50"
-              }`}
-            >
-
-              <input
-                type="file"
-                accept=".pdf"
-                onChange={handleFileChange}
-                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-              />
-
-              <div className="pointer-events-none">
-
-                <div className="mx-auto mb-5 w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500/20 to-cyan-500/10 border border-indigo-500/20 flex items-center justify-center text-3xl">
-                  📄
-                </div>
-
-                {fileName ? (
-                  <>
-                    <p className="text-indigo-300 font-semibold break-all">
-                      {fileName}
-                    </p>
-
-                    <p className="mt-2 text-xs text-emerald-400">
-                      ✓ Resume ready for analysis
-                    </p>
-                  </>
-                ) : (
-                  <>
-                    <p className="text-white font-semibold text-lg">
-                      Drop your resume here
-                    </p>
-
-                    <p className="text-slate-500 text-sm mt-2">
-                      or click to browse from your computer
-                    </p>
-                  </>
-                )}
-
-                <p className="text-xs text-slate-600 mt-4">
-                  PDF only • Maximum 10MB
-                </p>
-
-              </div>
+        {/* =====================================================
+            DASHBOARD VIEW (NEW)
+        ===================================================== */}
+        {showDashboard ? (
+          <section className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="flex items-center justify-between mb-8">
+              <h2 className="text-3xl font-black text-white flex items-center gap-3">
+                <span>📁</span> My Analysis History
+              </h2>
             </div>
 
-            {/* JOB DESCRIPTION */}
+            {loadingReports ? (
+              <div className="text-center py-20">
+                <span className="w-8 h-8 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin mx-auto block mb-4" />
+                <p className="text-slate-400">Loading your past reports...</p>
+              </div>
+            ) : reportsList.length === 0 ? (
+              <div className="text-center py-20 bg-slate-900/50 border border-slate-800 rounded-3xl">
+                <div className="text-5xl mb-4">📭</div>
+                <h3 className="text-xl font-bold text-white mb-2">No Reports Found</h3>
+                <p className="text-slate-400 mb-6">You haven't analyzed any resumes yet.</p>
+                <button 
+                  onClick={() => setShowDashboard(false)}
+                  className="px-6 py-2.5 rounded-xl bg-indigo-600 text-white font-semibold hover:bg-indigo-500 transition-colors"
+                >
+                  Analyze First Resume
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                {reportsList.map((report) => (
+                  <div 
+                    key={report._id} 
+                    className="bg-slate-900/70 border border-slate-700 rounded-2xl p-5 hover:border-indigo-500/50 hover:bg-slate-900 cursor-pointer transition-all duration-300 group"
+                    onClick={() => loadPastReport(report)}
+                  >
+                    <div className="flex justify-between items-start mb-4">
+                      <div className="w-10 h-10 rounded-xl bg-indigo-500/10 flex items-center justify-center text-xl border border-indigo-500/20">
+                        📄
+                      </div>
+                      <div className="text-right">
+                        <span className={`text-xl font-black ${getScoreColor(report.overall_score)}`}>
+                          {report.overall_score}/100
+                        </span>
+                        <p className="text-[10px] uppercase tracking-wider text-slate-500">Overall</p>
+                      </div>
+                    </div>
+                    
+                    <h4 className="font-bold text-white truncate mb-1" title={report.file_name}>
+                      {report.file_name}
+                    </h4>
+                    
+                    <p className="text-xs text-slate-400 mb-4 line-clamp-2">
+                      {report.job_description ? `Role: ${report.job_description}` : "No specific role targeted"}
+                    </p>
+                    
+                    <div className="flex items-center justify-between pt-4 border-t border-slate-800">
+                      <span className="text-xs text-slate-500">
+                        {new Date(report.created_at).toLocaleDateString()}
+                      </span>
+                      <span className="text-xs font-semibold text-indigo-400 group-hover:text-indigo-300 flex items-center gap-1">
+                        View Report <span className="text-lg leading-none">→</span>
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        ) : (
 
-            <div className="mt-6">
+        /* =====================================================
+            NORMAL UPLOAD & RESULT VIEW
+        ===================================================== */
+        <>
+          {/* UPLOAD SCREEN */}
+          {!structured && (
+            <>
+              {/* HERO */}
 
-              <div className="flex items-center justify-between mb-3">
+              <section className="text-center max-w-3xl mx-auto mb-10">
 
-                <div>
-                  <label className="text-sm font-bold text-white">
-                    🎯 Target Job Description
-                  </label>
-
-                  <p className="text-xs text-slate-500 mt-1">
-                    Paste a real job posting for personalized matching.
-                  </p>
+                <div className="inline-flex items-center gap-2 px-4 py-2 mb-5 rounded-full border border-indigo-500/20 bg-indigo-500/5 text-indigo-300 text-xs font-medium">
+                  ✨ AI-Powered Career Intelligence
                 </div>
 
-                <span className="text-xs text-slate-600">
-                  {jobDescription.length}/5000
-                </span>
+                <h2 className="text-4xl md:text-6xl font-black tracking-tight leading-tight text-white">
+                  Turn Your Resume Into
 
-              </div>
+                  <span className="block bg-gradient-to-r from-indigo-400 via-blue-400 to-cyan-400 bg-clip-text text-transparent">
+                    Your Career Advantage.
+                  </span>
+                </h2>
 
-              <textarea
-                value={jobDescription}
-                onChange={(e) =>
-                  setJobDescription(
-                    e.target.value.slice(0, 5000)
-                  )
-                }
-                placeholder={`Paste the job description here...
+                <p className="mt-5 text-slate-400 text-sm md:text-base leading-7 max-w-2xl mx-auto">
+                  Analyze your resume, discover missing skills
+                  and get actionable career insights.
+                </p>
+
+              </section>
+
+              {/* UPLOAD */}
+
+              <section className="max-w-3xl mx-auto">
+
+                <form
+                  onSubmit={handleSubmit}
+                  className="bg-slate-900/70 border border-slate-800 rounded-3xl p-5 md:p-7 shadow-2xl shadow-black/20 backdrop-blur-xl"
+                >
+
+                  {/* RESUME */}
+
+                  <div
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                    className={`relative rounded-2xl border-2 border-dashed p-8 md:p-12 text-center transition-all duration-300 ${
+                      dragActive
+                        ? "border-indigo-400 bg-indigo-500/10 scale-[1.01]"
+                        : "border-slate-700 bg-slate-950/50 hover:border-indigo-500/50"
+                    }`}
+                  >
+
+                    <input
+                      type="file"
+                      accept=".pdf"
+                      onChange={handleFileChange}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    />
+
+                    <div className="pointer-events-none">
+
+                      <div className="mx-auto mb-5 w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500/20 to-cyan-500/10 border border-indigo-500/20 flex items-center justify-center text-3xl">
+                        📄
+                      </div>
+
+                      {fileName ? (
+                        <>
+                          <p className="text-indigo-300 font-semibold break-all">
+                            {fileName}
+                          </p>
+
+                          <p className="mt-2 text-xs text-emerald-400">
+                            ✓ Resume ready for analysis
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-white font-semibold text-lg">
+                            Drop your resume here
+                          </p>
+
+                          <p className="text-slate-500 text-sm mt-2">
+                            or click to browse from your computer
+                          </p>
+                        </>
+                      )}
+
+                      <p className="text-xs text-slate-600 mt-4">
+                        PDF only • Maximum 10MB
+                      </p>
+
+                    </div>
+                  </div>
+
+                  {/* JOB DESCRIPTION */}
+
+                  <div className="mt-6">
+
+                    <div className="flex items-center justify-between mb-3">
+
+                      <div>
+                        <label className="text-sm font-bold text-white">
+                          🎯 Target Job Description
+                        </label>
+
+                        <p className="text-xs text-slate-500 mt-1">
+                          Paste a real job posting for personalized matching.
+                        </p>
+                      </div>
+
+                      <span className="text-xs text-slate-600">
+                        {jobDescription.length}/5000
+                      </span>
+
+                    </div>
+
+                    <textarea
+                      value={jobDescription}
+                      onChange={(e) =>
+                        setJobDescription(
+                          e.target.value.slice(0, 5000)
+                        )
+                      }
+                      placeholder={`Paste the job description here...
 
 Example:
 
@@ -706,606 +812,633 @@ MongoDB
 SQL
 Git
 Problem Solving...`}
-                rows={8}
-                className="w-full resize-none rounded-2xl bg-slate-950/70 border border-slate-700 p-4 text-sm text-slate-200 placeholder:text-slate-600 outline-none focus:border-indigo-500/60 focus:ring-2 focus:ring-indigo-500/10 transition"
-              />
+                      rows={8}
+                      className="w-full resize-none rounded-2xl bg-slate-950/70 border border-slate-700 p-4 text-sm text-slate-200 placeholder:text-slate-600 outline-none focus:border-indigo-500/60 focus:ring-2 focus:ring-indigo-500/10 transition"
+                    />
 
-              <p className="mt-2 text-xs text-slate-600">
-                💡 Tip: A real job posting gives better match insights.
-              </p>
+                    <p className="mt-2 text-xs text-slate-600">
+                      💡 Tip: A real job posting gives better match insights.
+                    </p>
 
-            </div>
+                  </div>
 
-            {/* ERROR */}
+                  {/* ERROR */}
 
-            {error && (
-              <div className="mt-4 p-4 rounded-xl border border-red-500/20 bg-red-500/5 text-red-300 text-sm">
-                ⚠️ {error}
-              </div>
-            )}
+                  {error && (
+                    <div className="mt-4 p-4 rounded-xl border border-red-500/20 bg-red-500/5 text-red-300 text-sm">
+                      ⚠️ {error}
+                    </div>
+                  )}
 
-            {/* BUTTON */}
+                  {/* BUTTON */}
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="mt-5 w-full py-4 rounded-xl font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 shadow-lg shadow-indigo-600/20 transition-all duration-300 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-3"
-            >
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="mt-5 w-full py-4 rounded-xl font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 shadow-lg shadow-indigo-600/20 transition-all duration-300 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-3"
+                  >
 
-              {loading ? (
-                <>
-                  <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    {loading ? (
+                      <>
+                        <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
 
-                  AI is analyzing your career profile...
-                </>
-              ) : (
-                <>
-                  ✨ Analyze Resume
-                </>
-              )}
+                        AI is analyzing your career profile...
+                      </>
+                    ) : (
+                      <>
+                        ✨ Analyze Resume
+                      </>
+                    )}
 
-            </button>
+                  </button>
 
-          </form>
+                </form>
 
-          {/* LOADING */}
+                {/* LOADING */}
 
-          {loading && (
-            <div className="mt-6 text-center">
+                {loading && (
+                  <div className="mt-6 text-center">
 
-              <p className="text-sm text-slate-400">
-                🔍 Analyzing your resume...
-              </p>
+                    <p className="text-sm text-slate-400">
+                      🔍 Analyzing your resume...
+                    </p>
 
-              <p className="text-xs text-slate-600 mt-1">
-                AI is preparing your personalized career intelligence report.
-              </p>
+                    <p className="text-xs text-slate-600 mt-1">
+                      AI is preparing your personalized career intelligence report.
+                    </p>
 
-            </div>
+                  </div>
+                )}
+
+              </section>
+            </>
           )}
 
-        </section>
+          {/* =====================================================
+              RESULTS SCREEN
+          ===================================================== */}
 
-        {/* =====================================================
-            RESULTS
-        ===================================================== */}
+          {structured && !loading && (
 
-        {structured && !loading && (
+            <section className="mt-12">
 
-          <section className="mt-12">
+              {/* REPORT HEADER */}
 
-            {/* REPORT HEADER */}
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
 
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+                <div>
 
-              <div>
+                  <div className="flex items-center gap-2">
 
-                <div className="flex items-center gap-2">
+                    <span className="text-2xl">
+                      📊
+                    </span>
 
-                  <span className="text-2xl">
-                    📊
-                  </span>
+                    <h2 className="text-2xl md:text-3xl font-black text-white">
+                      Career Intelligence Report
+                    </h2>
 
-                  <h2 className="text-2xl md:text-3xl font-black text-white">
-                    Career Intelligence Report
-                  </h2>
+                  </div>
+
+                  <p className="text-sm text-slate-500 mt-2">
+                    AI-generated insights for {fileName}
+                  </p>
 
                 </div>
 
-                <p className="text-sm text-slate-500 mt-2">
-                  AI-generated insights for {fileName}
-                </p>
+                <div className="flex gap-2">
 
-              </div>
-
-              <div className="flex gap-2">
-
-                <button
-                  onClick={copyReport}
-                  className="px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-sm text-slate-300 hover:text-white hover:border-indigo-500/40 transition"
-                >
-                  📋 Copy
-                </button>
-
-                <button
-                  onClick={downloadReport}
-                  className="px-4 py-2.5 rounded-xl bg-indigo-600 text-sm font-semibold text-white hover:bg-indigo-500 transition"
-                >
-                  ↓ Download
-                </button>
-
-              </div>
-
-            </div>
-
-            {/* MAIN SCORE */}
-
-            {overallScore !== null && (
-
-              <div className="mb-6 bg-gradient-to-br from-indigo-950/60 to-slate-900/80 border border-indigo-500/20 rounded-3xl p-6 md:p-8">
-
-                <div className="flex flex-col md:flex-row items-center gap-8">
-
-                  <div
-                    className="w-36 h-36 rounded-full flex items-center justify-center"
-                    style={{
-                      background: `conic-gradient(#6366f1 ${
-                        overallScore * 3.6
-                      }deg, #1e293b 0deg)`,
-                    }}
+                  <button
+                    onClick={copyReport}
+                    className="px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-sm text-slate-300 hover:text-white hover:border-indigo-500/40 transition"
                   >
+                    📋 Copy
+                  </button>
 
-                    <div className="w-28 h-28 rounded-full bg-[#0b1020] flex flex-col items-center justify-center">
+                  <button
+                    onClick={downloadReport}
+                    className="px-4 py-2.5 rounded-xl bg-indigo-600 text-sm font-semibold text-white hover:bg-indigo-500 transition"
+                  >
+                    ↓ Download
+                  </button>
 
-                      <span className="text-4xl font-black text-white">
-                        {overallScore}
-                      </span>
+                </div>
 
-                      <span className="text-xs text-slate-500">
-                        OUT OF 100
-                      </span>
+              </div>
+
+              {/* MAIN SCORE */}
+
+              {overallScore !== null && (
+
+                <div className="mb-6 bg-gradient-to-br from-indigo-950/60 to-slate-900/80 border border-indigo-500/20 rounded-3xl p-6 md:p-8">
+
+                  <div className="flex flex-col md:flex-row items-center gap-8">
+
+                    <div
+                      className="w-36 h-36 rounded-full flex items-center justify-center"
+                      style={{
+                        background: `conic-gradient(#6366f1 ${
+                          overallScore * 3.6
+                        }deg, #1e293b 0deg)`,
+                      }}
+                    >
+
+                      <div className="w-28 h-28 rounded-full bg-[#0b1020] flex flex-col items-center justify-center">
+
+                        <span className="text-4xl font-black text-white">
+                          {overallScore}
+                        </span>
+
+                        <span className="text-xs text-slate-500">
+                          OUT OF 100
+                        </span>
+
+                      </div>
+
+                    </div>
+
+                    <div className="text-center md:text-left">
+
+                      <p className="text-xs uppercase tracking-[0.2em] text-indigo-400 font-bold">
+                        Overall Resume Score
+                      </p>
+
+                      <h3 className="text-2xl font-bold text-white mt-2">
+                        {getScoreMessage()}
+                      </h3>
+
+                      <p className="text-sm text-slate-400 mt-2 max-w-xl">
+                        Your score reflects resume quality,
+                        skills, experience, projects and ATS readiness.
+                      </p>
 
                     </div>
 
                   </div>
 
-                  <div className="text-center md:text-left">
+                </div>
+              )}
 
-                    <p className="text-xs uppercase tracking-[0.2em] text-indigo-400 font-bold">
-                      Overall Resume Score
-                    </p>
+              {/* SCORE BREAKDOWN */}
 
-                    <h3 className="text-2xl font-bold text-white mt-2">
-                      {getScoreMessage()}
-                    </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
 
-                    <p className="text-sm text-slate-400 mt-2 max-w-xl">
-                      Your score reflects resume quality,
-                      skills, experience, projects and ATS readiness.
-                    </p>
+                <ScoreMiniCard
+                  title="Overall Score"
+                  value={overallScore}
+                  icon="🏆"
+                />
 
+                <ScoreMiniCard
+                  title="Job Match"
+                  value={jobMatchScore}
+                  icon="🎯"
+                />
+
+                <ScoreMiniCard
+                  title="ATS Score"
+                  value={atsScore}
+                  icon="🤖"
+                />
+
+                <ScoreMiniCard
+                  title="Skills Score"
+                  value={skillsScore}
+                  icon="🧠"
+                />
+
+              </div>
+
+              {/* QUICK INSIGHTS */}
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+
+                <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-5">
+                  <div className="text-2xl mb-2">
+                    💪
                   </div>
 
+                  <h3 className="font-bold text-white">
+                    Strengths
+                  </h3>
+
+                  <p className="text-xs text-slate-400 mt-2">
+                    Strong areas identified from your resume.
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-yellow-500/20 bg-yellow-500/5 p-5">
+                  <div className="text-2xl mb-2">
+                    🧩
+                  </div>
+
+                  <h3 className="font-bold text-white">
+                    Skill Gaps
+                  </h3>
+
+                  <p className="text-xs text-slate-400 mt-2">
+                    Skills that can improve your profile.
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/5 p-5">
+                  <div className="text-2xl mb-2">
+                    🚀
+                  </div>
+
+                  <h3 className="font-bold text-white">
+                    Next Actions
+                  </h3>
+
+                  <p className="text-xs text-slate-400 mt-2">
+                    Recommended improvements for your resume.
+                  </p>
                 </div>
 
               </div>
-            )}
 
-            {/* SCORE BREAKDOWN */}
+              {/* =================================================
+                  ANALYSIS CARDS
+              ================================================= */}
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
 
-              <ScoreMiniCard
-                title="Overall Score"
-                value={overallScore}
-                icon="🏆"
-              />
+                {/* JOB MATCH ANALYSIS */}
+                {structured.jobMatch && structured.jobMatch.score > 0 && (
+                  <SectionCard
+                    title={`Target Job Match — ${jobMatchScore ?? "N/A"}/100`}
+                    icon="🎯"
+                    wide
+                  >
+                    <div className="space-y-6">
+                      {structured.jobMatch.summary && (
+                        <p className="text-slate-300">
+                          {structured.jobMatch.summary}
+                        </p>
+                      )}
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="bg-emerald-500/5 border border-emerald-500/10 rounded-xl p-4">
+                          <h4 className="font-semibold text-emerald-400 mb-3 flex items-center gap-2">
+                            <span>✓</span> Matched Keywords
+                          </h4>
+                          <div className="flex flex-wrap gap-2">
+                            {structured.jobMatch.matchedKeywords?.length > 0 ? (
+                              structured.jobMatch.matchedKeywords.map((kw, idx) => (
+                                <span key={idx} className="px-2 py-1 bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs rounded-md">
+                                  {kw}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="text-xs text-slate-500">None found</span>
+                            )}
+                          </div>
+                        </div>
 
-              <ScoreMiniCard
-                title="ATS Score"
-                value={atsScore}
-                icon="🤖"
-              />
+                        <div className="bg-red-500/5 border border-red-500/10 rounded-xl p-4">
+                          <h4 className="font-semibold text-red-400 mb-3 flex items-center gap-2">
+                            <span>⚠</span> Missing Keywords
+                          </h4>
+                          <div className="flex flex-wrap gap-2">
+                            {structured.jobMatch.missingKeywords?.length > 0 ? (
+                              structured.jobMatch.missingKeywords.map((kw, idx) => (
+                                <span key={idx} className="px-2 py-1 bg-red-500/10 border border-red-500/20 text-red-300 text-xs rounded-md">
+                                  {kw}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="text-xs text-slate-500">None missing!</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
 
-              <ScoreMiniCard
-                title="Skills Score"
-                value={skillsScore}
-                icon="🧠"
-              />
+                      {structured.jobMatch.recommendations?.length > 0 && (
+                        <div>
+                          <h4 className="font-semibold text-white mb-2 mt-2">
+                            Job-Specific Recommendations
+                          </h4>
+                          <ListItems items={structured.jobMatch.recommendations} />
+                        </div>
+                      )}
+                    </div>
+                  </SectionCard>
+                )}
 
-            </div>
+                {/* SUMMARY */}
 
-            {/* JOB KEYWORDS */}
+                <SectionCard
+                  title="Resume Summary"
+                  icon="📝"
+                >
+                  <p>
+                    {structured.summary ||
+                      "No summary available."}
+                  </p>
+                </SectionCard>
 
-            {jobDescription && keywords.length > 0 && (
+                {/* STRENGTHS */}
 
-              <div className="mb-6 bg-slate-900/70 border border-slate-800 rounded-2xl p-5">
+                <SectionCard
+                  title="Key Strengths"
+                  icon="💪"
+                >
+                  <ListItems
+                    items={structured.strengths}
+                  />
+                </SectionCard>
 
-                <div className="flex items-center gap-3 mb-4">
+                {/* WEAKNESSES */}
 
-                  <span className="text-xl">
-                    🔑
-                  </span>
+                <SectionCard
+                  title="Weaknesses"
+                  icon="⚠️"
+                >
+                  <ListItems
+                    items={structured.weaknesses}
+                  />
+                </SectionCard>
+
+                {/* SKILLS */}
+
+                <SectionCard
+                  title={`Skills Analysis — ${skillsScore ?? "N/A"}/100`}
+                  icon="🧠"
+                >
+
+                  <div className="space-y-5">
+
+                    <div>
+                      <h4 className="font-semibold text-white mb-2">
+                        Technical Skills
+                      </h4>
+
+                      <ListItems
+                        items={
+                          structured.skills?.technical
+                        }
+                      />
+                    </div>
+
+                    <div>
+                      <h4 className="font-semibold text-white mb-2">
+                        Soft Skills
+                      </h4>
+
+                      <ListItems
+                        items={
+                          structured.skills?.soft
+                        }
+                      />
+                    </div>
+
+                    <div>
+                      <h4 className="font-semibold text-white mb-2">
+                        Missing / Recommended Skills
+                      </h4>
+
+                      <ListItems
+                        items={
+                          structured.skills?.missing
+                        }
+                      />
+                    </div>
+
+                  </div>
+
+                </SectionCard>
+
+                {/* EXPERIENCE */}
+
+                <SectionCard
+                  title={`Experience Analysis — ${experienceScore ?? "N/A"}/100`}
+                  icon="💼"
+                >
+                  <ListItems
+                    items={
+                      structured.experience?.points
+                    }
+                  />
+                </SectionCard>
+
+                {/* PROJECTS */}
+
+                <SectionCard
+                  title={`Project Analysis — ${projectsScore ?? "N/A"}/100`}
+                  icon="🚀"
+                >
+                  <ListItems
+                    items={
+                      structured.projects?.points
+                    }
+                  />
+                </SectionCard>
+
+                {/* EDUCATION */}
+
+                <SectionCard
+                  title={`Education Analysis — ${educationScore ?? "N/A"}/100`}
+                  icon="🎓"
+                >
+                  <ListItems
+                    items={
+                      structured.education?.points
+                    }
+                  />
+                </SectionCard>
+
+                {/* ATS */}
+
+                <SectionCard
+                  title={`ATS Analysis — ${atsScore ?? "N/A"}/100`}
+                  icon="🤖"
+                >
+
+                  <div className="space-y-5">
+
+                    <div>
+                      <h4 className="font-semibold text-white mb-2">
+                        Keywords
+                      </h4>
+
+                      <ListItems
+                        items={
+                          structured.ats?.keywords
+                        }
+                      />
+                    </div>
+
+                    <div>
+                      <h4 className="font-semibold text-white mb-2">
+                        Formatting
+                      </h4>
+
+                      <ListItems
+                        items={
+                          structured.ats?.formatting
+                        }
+                      />
+                    </div>
+
+                    <div>
+                      <h4 className="font-semibold text-white mb-2">
+                        ATS Issues
+                      </h4>
+
+                      <ListItems
+                        items={
+                          structured.ats?.issues
+                        }
+                      />
+                    </div>
+
+                  </div>
+
+                </SectionCard>
+
+                {/* RECOMMENDATIONS */}
+
+                <SectionCard
+                  title="Actionable Recommendations"
+                  icon="💡"
+                  wide
+                >
+                  <ListItems
+                    items={
+                      structured.recommendations
+                    }
+                  />
+                </SectionCard>
+
+                {/* VERDICT */}
+
+                <SectionCard
+                  title="Final Verdict"
+                  icon="🏆"
+                  wide
+                >
+                  <p>
+                    {structured.verdict ||
+                      "No final verdict available."}
+                  </p>
+                </SectionCard>
+
+              </div>
+
+              {/* =================================================
+                  CAREER ROADMAP
+              ================================================= */}
+
+              <div className="mt-6 bg-gradient-to-br from-indigo-950/40 to-slate-900/80 border border-indigo-500/20 rounded-3xl p-6">
+
+                <div className="flex items-center gap-3 mb-6">
+
+                  <div className="w-11 h-11 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-xl">
+                    🗺️
+                  </div>
 
                   <div>
 
-                    <h3 className="font-bold text-white">
-                      Target Job Keywords
+                    <h3 className="text-lg font-bold text-white">
+                      Career Improvement Roadmap
                     </h3>
 
                     <p className="text-xs text-slate-500 mt-1">
-                      Important terms detected from your job description
+                      A simple path to improve your resume
                     </p>
 
                   </div>
 
                 </div>
 
-                <div className="flex flex-wrap gap-2">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
 
-                  {keywords.map((keyword) => (
+                  <div className="p-5 rounded-2xl bg-slate-950/50 border border-slate-800">
 
-                    <span
-                      key={keyword}
-                      className="px-3 py-1.5 rounded-full text-xs font-medium bg-indigo-500/10 border border-indigo-500/20 text-indigo-300"
-                    >
-                      {keyword}
+                    <span className="text-xs font-bold text-indigo-400">
+                      STEP 01
                     </span>
 
-                  ))}
+                    <h4 className="mt-2 font-bold text-white">
+                      Fix Resume Gaps
+                    </h4>
+
+                    <p className="mt-2 text-xs text-slate-400 leading-6">
+                      Improve weak sections and missing information identified by AI.
+                    </p>
+
+                  </div>
+
+                  <div className="p-5 rounded-2xl bg-slate-950/50 border border-slate-800">
+
+                    <span className="text-xs font-bold text-cyan-400">
+                      STEP 02
+                    </span>
+
+                    <h4 className="mt-2 font-bold text-white">
+                      Build Missing Skills
+                    </h4>
+
+                    <p className="mt-2 text-xs text-slate-400 leading-6">
+                      Focus on skills and technologies relevant to your target role.
+                    </p>
+
+                  </div>
+
+                  <div className="p-5 rounded-2xl bg-slate-950/50 border border-slate-800">
+
+                    <span className="text-xs font-bold text-emerald-400">
+                      STEP 03
+                    </span>
+
+                    <h4 className="mt-2 font-bold text-white">
+                      Apply With Confidence
+                    </h4>
+
+                    <p className="mt-2 text-xs text-slate-400 leading-6">
+                      Re-analyze your improved resume before applying.
+                    </p>
+
+                  </div>
 
                 </div>
 
               </div>
 
-            )}
+              {/* RAW RESPONSE */}
 
-            {/* QUICK INSIGHTS */}
+              {result && (
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                <details className="mt-6 bg-slate-900/70 border border-slate-800 rounded-2xl p-5">
 
-              <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-5">
-                <div className="text-2xl mb-2">
-                  💪
-                </div>
+                  <summary className="cursor-pointer text-sm font-semibold text-slate-400 hover:text-white">
+                    ▶ View complete AI response
+                  </summary>
 
-                <h3 className="font-bold text-white">
-                  Strengths
-                </h3>
-
-                <p className="text-xs text-slate-400 mt-2">
-                  Strong areas identified from your resume.
-                </p>
-              </div>
-
-              <div className="rounded-2xl border border-yellow-500/20 bg-yellow-500/5 p-5">
-                <div className="text-2xl mb-2">
-                  🧩
-                </div>
-
-                <h3 className="font-bold text-white">
-                  Skill Gaps
-                </h3>
-
-                <p className="text-xs text-slate-400 mt-2">
-                  Skills that can improve your profile.
-                </p>
-              </div>
-
-              <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/5 p-5">
-                <div className="text-2xl mb-2">
-                  🚀
-                </div>
-
-                <h3 className="font-bold text-white">
-                  Next Actions
-                </h3>
-
-                <p className="text-xs text-slate-400 mt-2">
-                  Recommended improvements for your resume.
-                </p>
-              </div>
-
-            </div>
-
-            {/* =================================================
-                ANALYSIS CARDS
-            ================================================= */}
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-
-              {/* SUMMARY */}
-
-              <SectionCard
-                title="Resume Summary"
-                icon="📝"
-              >
-                <p>
-                  {structured.summary ||
-                    "No summary available."}
-                </p>
-              </SectionCard>
-
-              {/* STRENGTHS */}
-
-              <SectionCard
-                title="Key Strengths"
-                icon="💪"
-              >
-                <ListItems
-                  items={structured.strengths}
-                />
-              </SectionCard>
-
-              {/* WEAKNESSES */}
-
-              <SectionCard
-                title="Weaknesses"
-                icon="⚠️"
-              >
-                <ListItems
-                  items={structured.weaknesses}
-                />
-              </SectionCard>
-
-              {/* SKILLS */}
-
-              <SectionCard
-                title={`Skills Analysis — ${skillsScore ?? "N/A"}/100`}
-                icon="🧠"
-              >
-
-                <div className="space-y-5">
-
-                  <div>
-                    <h4 className="font-semibold text-white mb-2">
-                      Technical Skills
-                    </h4>
-
-                    <ListItems
-                      items={
-                        structured.skills?.technical
-                      }
-                    />
+                  <div className="mt-4 whitespace-pre-wrap text-sm text-slate-400 leading-7">
+                    {result}
                   </div>
 
-                  <div>
-                    <h4 className="font-semibold text-white mb-2">
-                      Soft Skills
-                    </h4>
+                </details>
 
-                    <ListItems
-                      items={
-                        structured.skills?.soft
-                      }
-                    />
-                  </div>
+              )}
 
-                  <div>
-                    <h4 className="font-semibold text-white mb-2">
-                      Missing / Recommended Skills
-                    </h4>
+              {/* RESET */}
 
-                    <ListItems
-                      items={
-                        structured.skills?.missing
-                      }
-                    />
-                  </div>
+              <div className="text-center mt-8">
 
-                </div>
-
-              </SectionCard>
-
-              {/* EXPERIENCE */}
-
-              <SectionCard
-                title={`Experience Analysis — ${experienceScore ?? "N/A"}/100`}
-                icon="💼"
-              >
-                <ListItems
-                  items={
-                    structured.experience?.points
-                  }
-                />
-              </SectionCard>
-
-              {/* PROJECTS */}
-
-              <SectionCard
-                title={`Project Analysis — ${projectsScore ?? "N/A"}/100`}
-                icon="🚀"
-              >
-                <ListItems
-                  items={
-                    structured.projects?.points
-                  }
-                />
-              </SectionCard>
-
-              {/* EDUCATION */}
-
-              <SectionCard
-                title={`Education Analysis — ${educationScore ?? "N/A"}/100`}
-                icon="🎓"
-              >
-                <ListItems
-                  items={
-                    structured.education?.points
-                  }
-                />
-              </SectionCard>
-
-              {/* ATS */}
-
-              <SectionCard
-                title={`ATS Analysis — ${atsScore ?? "N/A"}/100`}
-                icon="🤖"
-              >
-
-                <div className="space-y-5">
-
-                  <div>
-                    <h4 className="font-semibold text-white mb-2">
-                      Keywords
-                    </h4>
-
-                    <ListItems
-                      items={
-                        structured.ats?.keywords
-                      }
-                    />
-                  </div>
-
-                  <div>
-                    <h4 className="font-semibold text-white mb-2">
-                      Formatting
-                    </h4>
-
-                    <ListItems
-                      items={
-                        structured.ats?.formatting
-                      }
-                    />
-                  </div>
-
-                  <div>
-                    <h4 className="font-semibold text-white mb-2">
-                      ATS Issues
-                    </h4>
-
-                    <ListItems
-                      items={
-                        structured.ats?.issues
-                      }
-                    />
-                  </div>
-
-                </div>
-
-              </SectionCard>
-
-              {/* RECOMMENDATIONS */}
-
-              <SectionCard
-                title="Actionable Recommendations"
-                icon="💡"
-                wide
-              >
-                <ListItems
-                  items={
-                    structured.recommendations
-                  }
-                />
-              </SectionCard>
-
-              {/* VERDICT */}
-
-              <SectionCard
-                title="Final Verdict"
-                icon="🏆"
-                wide
-              >
-                <p>
-                  {structured.verdict ||
-                    "No final verdict available."}
-                </p>
-              </SectionCard>
-
-            </div>
-
-            {/* =================================================
-                CAREER ROADMAP
-            ================================================= */}
-
-            <div className="mt-6 bg-gradient-to-br from-indigo-950/40 to-slate-900/80 border border-indigo-500/20 rounded-3xl p-6">
-
-              <div className="flex items-center gap-3 mb-6">
-
-                <div className="w-11 h-11 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-xl">
-                  🗺️
-                </div>
-
-                <div>
-
-                  <h3 className="text-lg font-bold text-white">
-                    Career Improvement Roadmap
-                  </h3>
-
-                  <p className="text-xs text-slate-500 mt-1">
-                    A simple path to improve your resume
-                  </p>
-
-                </div>
+                <button
+                  onClick={resetAnalysis}
+                  className="px-6 py-3 rounded-xl border border-slate-700 bg-slate-900 text-slate-300 hover:text-white hover:border-indigo-500/50 transition"
+                >
+                  ↻ Analyze Another Resume
+                </button>
 
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-
-                <div className="p-5 rounded-2xl bg-slate-950/50 border border-slate-800">
-
-                  <span className="text-xs font-bold text-indigo-400">
-                    STEP 01
-                  </span>
-
-                  <h4 className="mt-2 font-bold text-white">
-                    Fix Resume Gaps
-                  </h4>
-
-                  <p className="mt-2 text-xs text-slate-400 leading-6">
-                    Improve weak sections and missing information identified by AI.
-                  </p>
-
-                </div>
-
-                <div className="p-5 rounded-2xl bg-slate-950/50 border border-slate-800">
-
-                  <span className="text-xs font-bold text-cyan-400">
-                    STEP 02
-                  </span>
-
-                  <h4 className="mt-2 font-bold text-white">
-                    Build Missing Skills
-                  </h4>
-
-                  <p className="mt-2 text-xs text-slate-400 leading-6">
-                    Focus on skills and technologies relevant to your target role.
-                  </p>
-
-                </div>
-
-                <div className="p-5 rounded-2xl bg-slate-950/50 border border-slate-800">
-
-                  <span className="text-xs font-bold text-emerald-400">
-                    STEP 03
-                  </span>
-
-                  <h4 className="mt-2 font-bold text-white">
-                    Apply With Confidence
-                  </h4>
-
-                  <p className="mt-2 text-xs text-slate-400 leading-6">
-                    Re-analyze your improved resume before applying.
-                  </p>
-
-                </div>
-
-              </div>
-
-            </div>
-
-            {/* RAW RESPONSE */}
-
-            {result && (
-
-              <details className="mt-6 bg-slate-900/70 border border-slate-800 rounded-2xl p-5">
-
-                <summary className="cursor-pointer text-sm font-semibold text-slate-400 hover:text-white">
-                  ▶ View complete AI response
-                </summary>
-
-                <div className="mt-4 whitespace-pre-wrap text-sm text-slate-400 leading-7">
-                  {result}
-                </div>
-
-              </details>
-
-            )}
-
-            {/* RESET */}
-
-            <div className="text-center mt-8">
-
-              <button
-                onClick={resetAnalysis}
-                className="px-6 py-3 rounded-xl border border-slate-700 bg-slate-900 text-slate-300 hover:text-white hover:border-indigo-500/50 transition"
-              >
-                ↻ Analyze Another Resume
-              </button>
-
-            </div>
-
-          </section>
+            </section>
+          )}
+        </>
         )}
 
       </main>
