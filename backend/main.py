@@ -43,7 +43,7 @@ app.add_middleware(
 # ============================================================
 
 API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-3.6-flash"
 
 MONGO_URI = os.getenv("MONGO_URI")
 
