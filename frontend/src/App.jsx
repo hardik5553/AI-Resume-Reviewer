@@ -64,6 +64,11 @@ export default function App() {
     education: []
   });
 
+  // =========================================================
+  // FEATURE 4: MULTI-ROLE TARGETING STATE
+  // =========================================================
+  const [selectedRoleIndex, setSelectedRoleIndex] = useState(0);
+
   // Automatically pre-fill builder when analysis result arrives
   useEffect(() => {
     if (structured) {
@@ -92,6 +97,7 @@ export default function App() {
               "Bachelor of Technology in Information Technology"
             ]
       });
+      setSelectedRoleIndex(0);
     }
   }, [structured, user]);
 
@@ -342,6 +348,37 @@ export default function App() {
   ];
 
   // =========================================================
+  // FEATURE 4: MULTI-ROLE TARGETING HELPERS
+  // =========================================================
+  const multiRoles = structured?.multiRoleTargeting && structured.multiRoleTargeting.length > 0
+    ? structured.multiRoleTargeting
+    : [
+        {
+          role: "Frontend Developer",
+          matchScore: safeScore(skillsScore ? skillsScore + 5 : 72),
+          prioritySkills: ["React", "JavaScript", "Tailwind CSS", "HTML5"],
+          projectToHighlight: "Personal Portfolio Website with clean component hierarchy",
+          reorderAdvice: "Highlight UI design & responsive performance metrics at the top."
+        },
+        {
+          role: "Backend Developer",
+          matchScore: safeScore(experienceScore ? experienceScore + 8 : 68),
+          prioritySkills: ["Python", "FastAPI / Node.js", "MongoDB", "REST APIs"],
+          projectToHighlight: "Backend API microservices and secure authentication pipelines",
+          reorderAdvice: "Move database optimization and API latency achievements above styling skills."
+        },
+        {
+          role: "Full Stack Engineer",
+          matchScore: safeScore(overallScore || 75),
+          prioritySkills: ["React", "FastAPI / Node.js", "Database Design", "Git & CI/CD"],
+          projectToHighlight: "End-to-end full-stack AI Resume Reviewer platform",
+          reorderAdvice: "Present balanced bullet points covering client-side state and cloud backend storage."
+        }
+      ];
+
+  const activeRoleData = multiRoles[selectedRoleIndex] || multiRoles[0];
+
+  // =========================================================
   // COPY REPORT
   // =========================================================
 
@@ -384,6 +421,9 @@ Candidate Percentile: Top ${100 - calculatePercentile(overallScore)}% in Industr
 
 JOB MATCH SCORE:
 ${jobMatchScore ?? "N/A"}/100
+
+MULTI-ROLE TARGETING:
+${multiRoles.map(r => `- ${r.role}: ${r.matchScore}/100 (Highlight: ${r.projectToHighlight})`).join("\n")}
 
 SUMMARY:
 ${structured?.summary || "N/A"}
@@ -1544,6 +1584,117 @@ Problem Solving...`}
                     <p className="text-xs text-slate-400 mt-2 text-center">
                       Scores above 75 fall directly into the top recruiter screening shortlist tier.
                     </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* =========================================================
+                  FEATURE 4: MULTI-ROLE TARGETING & DYNAMIC HIGHLIGHTING
+              ========================================================= */}
+              <div className="mb-8 bg-slate-900/80 border border-slate-800 rounded-3xl p-6 md:p-8 backdrop-blur-xl">
+                <div className="flex flex-col md:flex-row md:items-center justify-between pb-6 border-b border-slate-800 gap-4 mb-6">
+                  <div>
+                    <div className="inline-flex items-center gap-2 px-3 py-1 mb-2 rounded-full border border-cyan-500/30 bg-cyan-500/10 text-cyan-300 text-xs font-semibold">
+                      🎯 Multi-Role Targeting & Alignment
+                    </div>
+                    <h3 className="text-xl md:text-2xl font-black text-white">
+                      Parallel Role Suitability
+                    </h3>
+                    <p className="text-xs md:text-sm text-slate-400 mt-1">
+                      Switch target profiles to see customized ATS match scores and dynamic project recommendations.
+                    </p>
+                  </div>
+                </div>
+
+                {/* ROLE TABS / CARDS */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                  {multiRoles.map((roleObj, idx) => {
+                    const isSelected = selectedRoleIndex === idx;
+                    return (
+                      <div
+                        key={idx}
+                        onClick={() => setSelectedRoleIndex(idx)}
+                        className={`p-5 rounded-2xl border cursor-pointer transition-all duration-300 text-left ${
+                          isSelected
+                            ? "bg-indigo-600/15 border-indigo-500 shadow-lg shadow-indigo-500/10"
+                            : "bg-slate-950/60 border-slate-800 hover:border-slate-700"
+                        }`}
+                      >
+                        <div className="flex justify-between items-start mb-2">
+                          <span className="text-xs uppercase tracking-wider text-slate-400 font-bold">
+                            Profile {idx + 1}
+                          </span>
+                          <span className={`text-base font-black ${getScoreColor(roleObj.matchScore)}`}>
+                            {roleObj.matchScore}%
+                          </span>
+                        </div>
+                        <h4 className="text-sm font-bold text-white mb-2">{roleObj.role}</h4>
+                        <div className="h-1 bg-slate-800 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full ${isSelected ? "bg-indigo-400" : "bg-slate-600"}`}
+                            style={{ width: `${roleObj.matchScore}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* ACTIVE ROLE STRATEGY BREAKDOWN */}
+                <div className="bg-slate-950/70 border border-slate-800/80 rounded-2xl p-6">
+                  <div className="flex items-center gap-3 mb-4 pb-3 border-b border-slate-800/60">
+                    <span className="text-2xl">✨</span>
+                    <div>
+                      <h4 className="text-sm font-bold text-white">
+                        Restructuring Strategy for {activeRoleData.role}
+                      </h4>
+                      <p className="text-xs text-slate-500">
+                        Tailor your resume specifically for this career track.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-sm">
+                    {/* PROJECT TO HIGHLIGHT */}
+                    <div className="space-y-2">
+                      <span className="text-xs uppercase tracking-wider font-bold text-indigo-400 flex items-center gap-1.5">
+                        <span>🌟</span> Primary Project to Spotlight
+                      </span>
+                      <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 leading-relaxed">
+                        {activeRoleData.projectToHighlight || "Highlight relevant hands-on technical architecture."}
+                      </div>
+                    </div>
+
+                    {/* DYNAMIC REORDER ADVICE */}
+                    <div className="space-y-2">
+                      <span className="text-xs uppercase tracking-wider font-bold text-cyan-400 flex items-center gap-1.5">
+                        <span>🔄</span> Section Re-ordering Advice
+                      </span>
+                      <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 leading-relaxed">
+                        {activeRoleData.reorderAdvice || "Place most aligned skills and accomplishments directly below summary."}
+                      </div>
+                    </div>
+
+                    {/* PRIORITY SKILLS */}
+                    <div className="md:col-span-2 space-y-2 pt-2 border-t border-slate-800/60">
+                      <span className="text-xs uppercase tracking-wider font-bold text-emerald-400 flex items-center gap-1.5">
+                        <span>⚡</span> Must-Have Keywords for this Track
+                      </span>
+                      <div className="flex flex-wrap gap-2 pt-1">
+                        {activeRoleData.prioritySkills?.length > 0 ? (
+                          activeRoleData.prioritySkills.map((sk, sIdx) => (
+                            <span
+                              key={sIdx}
+                              className="px-2.5 py-1 bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs rounded-lg font-medium"
+                            >
+                              {sk}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="text-xs text-slate-500">No specific keywords tagged.</span>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
