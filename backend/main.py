@@ -14,6 +14,12 @@ from google.genai import types
 from pymongo import MongoClient
 import certifi
 
+# ============================================================
+# NEW IMPORTS FOR FEATURE: URL SCRAPER
+# ============================================================
+import requests
+from bs4 import BeautifulSoup
+
 
 # ============================================================
 # FASTAPI APP
@@ -87,6 +93,31 @@ def health():
         "gemini_configured": bool(API_KEY),
         "db_connected": bool(resume_reports_collection is not None)
     }
+
+
+# ============================================================
+# FEATURE: JOB URL SCRAPER
+# ============================================================
+
+def scrape_job_url(url: str) -> str:
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Remove unwanted script, style, and nav tags to get clean text
+        for script in soup(["script", "style", "nav", "footer", "header", "aside"]):
+            script.decompose()
+            
+        text = soup.get_text(separator=' ', strip=True)
+        # Clean up multiple spaces
+        text = re.sub(r'\s+', ' ', text)
+        return text[:5000] # Return up to 5000 characters
+    except Exception as e:
+        print(f"URL Scraping Error: {e}")
+        return ""
 
 
 # ============================================================
@@ -588,7 +619,19 @@ def review_resume(
             raise HTTPException(status_code=400, detail="Could not extract text. Please upload a text-based PDF.")
 
         resume_text = resume_text[:25000]
-        job_description = (job_description or "").strip()[:5000]
+        job_description = (job_description or "").strip()
+        
+        # FEATURE: JOB URL SCRAPER INTEGRATION
+        if job_description.startswith("http://") or job_description.startswith("https://"):
+            print(f"Detected URL. Scraping job description from: {job_description}")
+            scraped_text = scrape_job_url(job_description)
+            if scraped_text:
+                job_description = scraped_text
+                print("URL scraped successfully.")
+            else:
+                print("Failed to scrape URL, continuing with original input.")
+        
+        job_description = job_description[:5000]
 
         print("\nSending resume to Gemini...")
         structured_analysis = generate_ai_review(resume_text, job_description)
@@ -665,3 +708,70 @@ def get_user_reports(user_id: str):
     except Exception as e:
         print("\nFETCH REPORTS ERROR\n", traceback.format_exc())
         raise HTTPException(status_code=500, detail="Failed to fetch reports from database.")
+
+
+# ============================================================
+# GENERATE COVER LETTER & COLD EMAIL API (NEW FEATURE)
+# ============================================================
+
+@app.post("/api/generate-communication")
+def generate_communication(
+    structured_data: str = Form(...),
+    job_description: str = Form("")
+):
+    if not API_KEY:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is missing.")
+        
+    try:
+        jd_text = job_description.strip()
+        # Ensure we scrape here too if the user passed a URL initially but it wasn't saved parsed
+        if jd_text.startswith("http://") or jd_text.startswith("https://"):
+            scraped_text = scrape_job_url(jd_text)
+            jd_text = scraped_text if scraped_text else jd_text
+        jd_text = jd_text[:5000]
+        
+        client = genai.Client(api_key=API_KEY)
+        
+        prompt = f"""
+        You are an expert career coach and professional copywriter.
+        Using the candidate's parsed resume data and the target job description below, generate a highly personalized, ATS-friendly Cover Letter and a short, punchy Cold Email to the Hiring Manager.
+        
+        Return ONLY valid JSON in this exact format, with NO markdown and NO extra text:
+        {{
+            "cover_letter": "Your generated cover letter text here...",
+            "cold_email": "Your generated cold email text here..."
+        }}
+        
+        CANDIDATE RESUME ANALYSIS DATA:
+        {structured_data}
+        
+        TARGET JOB DESCRIPTION:
+        {jd_text}
+        """
+        
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(thinking_level="minimal"),
+                max_output_tokens=2000,
+                response_mime_type="application/json"
+            )
+        )
+        
+        raw_text = response.text.strip()
+        raw_text = re.sub(r"^```json\s*", "", raw_text, flags=re.IGNORECASE)
+        raw_text = re.sub(r"^```\s*", "", raw_text)
+        raw_text = re.sub(r"\s*```$", "", raw_text).strip()
+        
+        data = json.loads(raw_text)
+        
+        return {
+            "success": True,
+            "cover_letter": data.get("cover_letter", ""),
+            "cold_email": data.get("cold_email", "")
+        }
+        
+    except Exception as e:
+        print("\nGENERATE COMMUNICATION ERROR\n", traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Failed to generate communication templates.")
