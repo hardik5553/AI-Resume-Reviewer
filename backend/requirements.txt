@@ -6,3 +6,5 @@ pydantic
 google-genai
 pymongo 
 certifi
+beautifulsoup4
+requests
