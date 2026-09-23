@@ -49,7 +49,7 @@ app.add_middleware(
 # ============================================================
 
 API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = "gemini-3.6-flash"
+GEMINI_MODEL = "gemini-1.5-flash"
 
 MONGO_URI = os.getenv("MONGO_URI")
 
@@ -137,6 +137,46 @@ def extract_text_from_pdf(file_path: str) -> str:
             f"Failed to extract text from PDF: {str(e)}"
         )
     return "\n".join(text_parts).strip()
+
+
+# ============================================================
+# FEATURE: GEMINI OCR FALLBACK FOR SCANNED / IMAGE PDFs
+# ============================================================
+
+def extract_text_with_gemini(file_path: str) -> str:
+    if not API_KEY:
+        return ""
+    try:
+        client = genai.Client(api_key=API_KEY)
+        print("\nUploading scanned PDF to Gemini for native OCR extraction...")
+        
+        # Upload the file to Gemini Server
+        uploaded_file = client.files.upload(file=file_path)
+        
+        prompt = "Read this resume and extract all the text accurately. Return ONLY the raw extracted text, with no markdown formatting, no commentary, and no intro/outro."
+        
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[uploaded_file, prompt],
+            config=types.GenerateContentConfig(
+                temperature=0.0
+            )
+        )
+        
+        # Clean up the file from Gemini servers after processing
+        try:
+            client.files.delete(name=uploaded_file.name)
+            print("Gemini temporary file deleted.")
+        except Exception as cleanup_err:
+            print(f"Note: Could not delete file from Gemini: {cleanup_err}")
+            
+        if response and response.text:
+            print("Gemini OCR extraction successful.")
+            return response.text.strip()
+        return ""
+    except Exception as e:
+        print(f"Gemini OCR Error: {e}")
+        return ""
 
 
 # ============================================================
@@ -615,8 +655,13 @@ def review_resume(
         print("Resume saved.\nExtracting resume text...")
         resume_text = extract_text_from_pdf(temp_path)
 
-        if not resume_text:
-            raise HTTPException(status_code=400, detail="Could not extract text. Please upload a text-based PDF.")
+        # FEATURE: GEMINI OCR FALLBACK
+        if not resume_text or not resume_text.strip():
+            print("No text extracted using pdfplumber. Falling back to Gemini OCR...")
+            resume_text = extract_text_with_gemini(temp_path)
+
+        if not resume_text or not resume_text.strip():
+            raise HTTPException(status_code=400, detail="Could not extract text even with AI OCR. Please upload a clear, text-based PDF.")
 
         resume_text = resume_text[:25000]
         job_description = (job_description or "").strip()
