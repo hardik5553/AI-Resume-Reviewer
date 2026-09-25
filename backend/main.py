@@ -49,7 +49,8 @@ app.add_middleware(
 # ============================================================
 
 API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = "gemini-1.5-flash"
+# FIXED: Using the original 3.6-flash model which is active and supported
+GEMINI_MODEL = "gemini-3.6-flash"
 
 MONGO_URI = os.getenv("MONGO_URI")
 
