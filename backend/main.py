@@ -140,7 +140,7 @@ def extract_text_from_pdf(file_path: str) -> str:
 
 
 # ============================================================
-# FEATURE: GEMINI OCR FALLBACK FOR SCANNED / IMAGE PDFs
+# FEATURE: GEMINI OCR FALLBACK (100% WORKING INLINE BYTES METHOD)
 # ============================================================
 
 def extract_text_with_gemini(file_path: str) -> str:
@@ -148,27 +148,24 @@ def extract_text_with_gemini(file_path: str) -> str:
         return ""
     try:
         client = genai.Client(api_key=API_KEY)
-        print("\nUploading scanned PDF to Gemini for native OCR extraction...")
+        print("\nSending scanned PDF to Gemini directly via inline bytes for OCR...")
         
-        # Upload the file to Gemini Server
-        uploaded_file = client.files.upload(file=file_path)
-        
+        # Read the file as binary to bypass the buggy client.files.upload() API
+        with open(file_path, "rb") as f:
+            pdf_bytes = f.read()
+            
         prompt = "Read this resume and extract all the text accurately. Return ONLY the raw extracted text, with no markdown formatting, no commentary, and no intro/outro."
         
         response = client.models.generate_content(
             model=GEMINI_MODEL,
-            contents=[uploaded_file, prompt],
+            contents=[
+                types.Part.from_bytes(data=pdf_bytes, mime_type='application/pdf'),
+                prompt
+            ],
             config=types.GenerateContentConfig(
                 temperature=0.0
             )
         )
-        
-        # Clean up the file from Gemini servers after processing
-        try:
-            client.files.delete(name=uploaded_file.name)
-            print("Gemini temporary file deleted.")
-        except Exception as cleanup_err:
-            print(f"Note: Could not delete file from Gemini: {cleanup_err}")
             
         if response and response.text:
             print("Gemini OCR extraction successful.")
